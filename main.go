@@ -5,10 +5,12 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"io/ioutil"
 	"log"
 	"net"
 	"os"
 	"os/exec"
+	"path"
 	"path/filepath"
 	"runtime"
 	"strconv"
@@ -17,6 +19,7 @@ import (
 	"time"
 
 	"github.com/fatih/color"
+	"github.com/itchio/butler/buse/busegen/spec"
 	"github.com/itchio/butler/runner/macutil"
 
 	"github.com/chzyer/readline"
@@ -27,6 +30,8 @@ import (
 
 var verbose *bool
 
+var ErrCycle = errors.New("cycle")
+
 func main() {
 	app := kingpin.New("buse-cli", "A dumb CLI for butler service")
 	verbose = app.Flag("verbose", "Show full input & output").Bool()
@@ -36,7 +41,14 @@ func main() {
 	_, err := app.Parse(os.Args[1:])
 	must(err)
 
-	must(doMain())
+	for {
+		err := doMain()
+		if err != nil && errors.Is(err, ErrCycle) {
+			continue
+		}
+		must(err)
+		break
+	}
 }
 
 func doMain() error {
@@ -44,12 +56,79 @@ func doMain() error {
 	normalPrompt := "\033[31m»\033[0m "
 	pendingPrompt := "\033[31m◴\033[0m "
 
+	buseSpec := &spec.Spec{}
+	readSpec := func() error {
+		gopath := os.Getenv("GOPATH")
+		if gopath == "" {
+			return errors.New("GOPATH not set")
+		}
+
+		specPath := path.Join(gopath, "src", "github.com", "itchio", "butler", "buse", "busegen", "spec", "buse.json")
+
+		specBytes, err := ioutil.ReadFile(specPath)
+		if err != nil {
+			if os.IsNotExist(err) {
+				// try something funky for msys2 setups
+				output, oErr := exec.Command("cygpath", "-w", specPath).CombinedOutput()
+				if oErr == nil {
+					specPath = strings.TrimSpace(string(output))
+					specBytes, err = ioutil.ReadFile(specPath)
+				}
+			}
+
+			if err != nil {
+				return errors.Wrap(err, 0)
+			}
+		}
+
+		err = json.Unmarshal(specBytes, buseSpec)
+		if err != nil {
+			return errors.Wrap(err, 0)
+		}
+		return nil
+	}
+
+	err := readSpec()
+	if err != nil {
+		log.Printf("Could not read buse spec: %s", err.Error())
+	}
+
+	requestCompletion := func() readline.PrefixCompleterInterface {
+		var items []readline.PrefixCompleterInterface
+		for _, req := range buseSpec.Requests {
+			if req.Caller == "client" {
+				items = append(items, readline.PcItem(req.Method))
+			}
+		}
+
+		return readline.PcItem("r", items...)
+	}
+
+	notificationCompletion := func() readline.PrefixCompleterInterface {
+		var items []readline.PrefixCompleterInterface
+		for _, not := range buseSpec.Notifications {
+			items = append(items, readline.PcItem(not.Method))
+		}
+
+		return readline.PcItem("n", items...)
+	}
+
+	docCompletion := func() readline.PrefixCompleterInterface {
+		var items []readline.PrefixCompleterInterface
+		for _, not := range buseSpec.Notifications {
+			items = append(items, readline.PcItem(not.Method))
+		}
+		for _, req := range buseSpec.Requests {
+			items = append(items, readline.PcItem(req.Method))
+		}
+
+		return readline.PcItem("doc", items...)
+	}
+
 	var completer = readline.NewPrefixCompleter(
-		readline.PcItem("r",
-			readline.PcItem("Version.Get"),
-			readline.PcItem("Session.List"),
-		),
-		readline.PcItem("n"),
+		requestCompletion(),
+		notificationCompletion(),
+		docCompletion(),
 		readline.PcItem("st"),
 		readline.PcItem("help"),
 		readline.PcItem("exit"),
@@ -71,9 +150,7 @@ func doMain() error {
 	log.SetOutput(color.Output)
 
 	log.Printf("Thanks for flying buse-cli!")
-
 	f := prettyjson.NewFormatter()
-	f.KeyColor = color.New(color.FgBlue, color.Bold)
 
 	var itchPath = ""
 	switch runtime.GOOS {
@@ -126,7 +203,6 @@ func doMain() error {
 		must(cmd.Start())
 		defer cmd.Process.Kill()
 		must(cmd.Wait())
-		log.Print("Butler exited!")
 	}()
 
 	addrChan := make(chan string)
@@ -167,6 +243,7 @@ func doMain() error {
 	if err != nil {
 		return errors.Wrap(err, 0)
 	}
+	defer conn.Close()
 
 	pretty := func(input interface{}) string {
 		out, err := f.Marshal(input)
@@ -202,6 +279,71 @@ func doMain() error {
 		return pr
 	}
 
+	logFields := func(name string, fields []*spec.FieldSpec) {
+		if len(fields) == 0 {
+			log.Printf("%s: none", color.YellowString(name))
+			return
+		}
+
+		log.Printf("%s: ", color.YellowString(name))
+		log.Printf("")
+		for _, field := range fields {
+			log.Printf("  - %s: %s", color.RedString(field.Name), color.BlueString(field.Type))
+			log.Printf("    %s", field.Doc)
+		}
+	}
+
+	requestsByMethod := make(map[string]*spec.RequestSpec)
+	for _, req := range buseSpec.Requests {
+		requestsByMethod[req.Method] = req
+	}
+	notificationsByMethod := make(map[string]*spec.NotificationSpec)
+	for _, not := range buseSpec.Notifications {
+		notificationsByMethod[not.Method] = not
+	}
+
+	hasDoc := func(name string) bool {
+		if _, ok := requestsByMethod[name]; ok {
+			return true
+		}
+		if _, ok := notificationsByMethod[name]; ok {
+			return true
+		}
+		return false
+	}
+
+	showDoc := func(name string) {
+		time.Sleep(250 * time.Millisecond)
+		defer l.Refresh()
+
+		if req, ok := requestsByMethod[name]; ok {
+			log.Printf("")
+			log.Printf("%s (%s Request)", color.GreenString(req.Method), req.Caller)
+			log.Printf("")
+			log.Printf(req.Doc)
+			log.Printf("")
+			logFields("Parameters", req.Params.Fields)
+			log.Printf("")
+			logFields("Result", req.Result.Fields)
+			log.Printf("")
+			return
+		}
+
+		if not, ok := notificationsByMethod[name]; ok {
+			log.Printf("")
+			log.Printf("%s (Notification)", color.GreenString(not.Method))
+			log.Printf("")
+			log.Printf(not.Doc)
+			log.Printf("")
+			logFields("Parameters", not.Params.Fields)
+			log.Printf("")
+			return
+		}
+
+		log.Printf("No doc found for '%s'", name)
+	}
+
+	var lastMethod = ""
 	var lastStack = ""
 	go func() {
 		s := bufio.NewScanner(conn)
@@ -221,9 +363,15 @@ func doMain() error {
 
 				if _, ok := m["error"]; ok {
 					if e, ok := m["error"].(map[string]interface{}); ok {
-						log.Printf("⚠ %s (Code %d): %s\n", getRequest(m), int64(e["code"].(float64)), e["message"])
+						method := getRequest(m)
+						log.Printf("⚠ %s (Code %d):", color.GreenString(method), int64(e["code"].(float64)))
+						log.Printf("    %s", color.RedString(e["message"].(string)))
+						if hasDoc(method) {
+							log.Printf("(Use the 'doc' command to learn more about %s)", color.GreenString(method))
+						}
 						if data, ok := e["data"].(map[string]interface{}); ok {
 							lastStack = data["stack"].(string)
+							log.Printf("(Use the 'st' command to see a full stack trace)")
 						} else {
 							lastStack = ""
 						}
@@ -231,11 +379,22 @@ func doMain() error {
 						log.Printf("\n Error we can't unwrap: %s\n", pretty(m))
 					}
 				} else if _, ok := m["result"]; ok {
-					log.Printf("← %s: %s\n", getRequest(m), pretty(m["result"]))
+					// reply to one or our requests
+					method := getRequest(m)
+					log.Printf("← %s: %s\n", color.GreenString(method), pretty(m["result"]))
 				} else if _, ok := m["id"]; ok {
-					log.Printf("→ %.0f %s: %s\n", m["id"], m["method"], pretty(m["params"]))
+					// server request
+					method := m["method"].(string)
+					lastMethod = method
+					log.Printf("→ %s: %s\n", color.GreenString(method), pretty(m["params"]))
+					log.Printf("(Reply to this server request with '%.0f [json payload]')", m["id"])
+					if hasDoc(method) {
+						log.Printf("(Use the 'doc' command to learn more about %s)", color.GreenString(method))
+					}
 				} else if _, ok := m["params"]; ok {
-					log.Printf("✉ %s\n", pretty(m["params"]))
+					// notification
+					method := m["method"].(string)
+					log.Printf("✉ %s %s\n", color.GreenString(method), pretty(m["params"]))
 				} else {
 					log.Printf(" Not sure what: %s\n", pretty(m))
 				}
@@ -266,27 +425,52 @@ func doMain() error {
 					log.Printf("============================")
 				}
 				l.Refresh()
+			case "doc":
+				// doc for the latest command
+				if lastMethod != "" {
+					showDoc(lastMethod)
+				}
+			case "rb":
+				{
+					log.Printf("Building butler...")
+					cmd := exec.Command("bash", "-c", "go get -v -x github.com/itchio/butler")
+					cmd.Stdout = os.Stdout
+					cmd.Stderr = os.Stderr
+					err := cmd.Run()
+					if err != nil {
+						log.Printf("Could not build butler: %s", err.Error())
+						return nil
+					}
+				}
+				return ErrCycle
 			case "help", "h":
 				time.Sleep(25 * time.Millisecond)
+				log.Printf("")
 				log.Printf("Commands: ")
-				log.Printf("  r method [params]")
+				log.Printf("")
+				log.Printf("  %s", color.YellowString("r method [params]"))
 				log.Printf("    Send an rpc request. params is a JSON object, defaults to {}")
 				log.Printf("")
-				log.Printf("    Example: r Version.Get")
-				log.Printf("    Example: r Test.DoubleTwice {%#v: 4}", "number")
+				log.Printf("    Example: %s", color.BlueString("r Version.Get"))
+				log.Printf("    Example: %s", color.BlueString(fmt.Sprintf("r Test.DoubleTwice {%#v: 4}", "number")))
 				log.Printf("")
-				log.Printf("  id [result]")
+				log.Printf("  %s", color.YellowString("id [result]"))
 				log.Printf("    Reply to one of butler's rpc requests. result is a JSON object, defaults to {}")
 				log.Printf("")
-				log.Printf("  	Example: 0 {%#v: 8}", "number")
+				log.Printf("  	Example: %s", color.BlueString(fmt.Sprintf("0 {%#v: 8}", "number")))
 				log.Printf("")
-				log.Printf("  n method [params]: Send an rpc notification. params is a JSON object, defaults to {}")
+				log.Printf("  %s", color.YellowString("n method [params]"))
+				log.Printf("    Send an rpc notification. params is a JSON object, defaults to {}")
 				log.Printf("")
-				log.Printf("  st")
+				log.Printf("  %s", color.YellowString("doc [method]"))
+				log.Printf("    Display the documentation for a method (or the last request sent/received)")
+				log.Printf("")
+				log.Printf("  %s", color.YellowString("st"))
 				log.Printf("    Display a stack trace for the last error we got, if available.")
 				log.Printf("")
-				log.Printf("  q")
+				log.Printf("  %s", color.YellowString("q"))
 				log.Printf("    Quit")
+				log.Printf("")
 				l.Refresh()
 			default:
 				return fmt.Errorf("Unknown command '%s'", line)
@@ -296,6 +480,11 @@ func doMain() error {
 
 		kind := rootTokens[0]
 		rest := rootTokens[1]
+
+		if kind == "doc" {
+			showDoc(rest)
+			return nil
+		}
 
 		req := make(map[string]interface{})
 		req["jsonrpc"] = "2.0"
@@ -370,6 +559,7 @@ func doMain() error {
 		switch kind {
 		case "r":
 			pushRequest(req["id"].(int64), req["method"].(string))
+			lastMethod = req["method"].(string)
 		}
 
 		return nil
@@ -403,6 +593,12 @@ func doMain() error {
 
 		err = sendCommand(line)
 		if err != nil {
+			if errors.Is(err, ErrCycle) {
+				log.Printf("")
+				log.Printf("~~~~~~~~~~~ a short time later ~~~~~~~~~~~")
+				log.Printf("")
+				return err
+			}
 			time.Sleep(250 * time.Millisecond)
 			log.Printf("⚠ %s", err.Error())
 			l.Refresh()
