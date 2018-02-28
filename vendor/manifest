@@ -1,0 +1,78 @@
+{
+	"version": 0,
+	"dependencies": [
+		{
+			"importpath": "github.com/chzyer/logex",
+			"repository": "https://github.com/chzyer/logex",
+			"vcs": "git",
+			"revision": "445be9e134b204a8c920a30fedad02b2f2ab1efd",
+			"branch": "master",
+			"notests": true
+		},
+		{
+			"importpath": "github.com/chzyer/readline",
+			"repository": "https://github.com/chzyer/readline",
+			"vcs": "git",
+			"revision": "f6d7a1f6fbf35bbf9beb80dc63c56a29dcfb759f",
+			"branch": "master",
+			"notests": true
+		},
+		{
+			"importpath": "github.com/chzyer/test",
+			"repository": "https://github.com/chzyer/test",
+			"vcs": "git",
+			"revision": "a1ea475d72b168a29f44221e0ad031a842642302",
+			"branch": "master",
+			"notests": true
+		},
+		{
+			"importpath": "github.com/fatih/color",
+			"repository": "https://github.com/fatih/color",
+			"vcs": "git",
+			"revision": "507f6050b8568533fb3f5504de8e5205fa62a114",
+			"branch": "master",
+			"notests": true
+		},
+		{
+			"importpath": "github.com/go-errors/errors",
+			"repository": "https://github.com/go-errors/errors",
+			"vcs": "git",
+			"revision": "a6af135bd4e28680facf08a3d206b454abc877a4",
+			"branch": "master",
+			"notests": true
+		},
+		{
+			"importpath": "github.com/hokaccha/go-prettyjson",
+			"repository": "https://github.com/hokaccha/go-prettyjson",
+			"vcs": "git",
+			"revision": "e6b9231a2b1cc5798b336fdbf99c16cd8ad1e0c9",
+			"branch": "master",
+			"notests": true
+		},
+		{
+			"importpath": "github.com/nbutton23/zxcvbn-go",
+			"repository": "https://github.com/nbutton23/zxcvbn-go",
+			"vcs": "git",
+			"revision": "eafdab6b0663b4b528c35975c8b0e78be6e25261",
+			"branch": "master",
+			"notests": true
+		},
+		{
+			"importpath": "github.com/stretchr/objx",
+			"repository": "https://github.com/stretchr/objx",
+			"vcs": "git",
+			"revision": "8a3f7159479fbc75b30357fbc48f380b7320f08e",
+			"branch": "master",
+			"notests": true
+		},
+		{
+			"importpath": "golang.org/x/sys/unix",
+			"repository": "https://go.googlesource.com/sys",
+			"vcs": "git",
+			"revision": "f6cff0780e542efa0c8e864dc8fa522808f6a598",
+			"branch": "master",
+			"path": "/unix",
+			"notests": true
+		}
+	]
+}
