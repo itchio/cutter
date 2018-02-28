@@ -431,11 +431,11 @@ func doMain() error {
 					showDoc(lastMethod)
 				}
 			case "rb":
-				log.Printf("Building butler...")
+				log.Printf("Rebuilding...")
 				bash := func(command string) error {
 					startTime := time.Now()
 
-					log.Printf("$ %s", command)
+					log.Print(color.HiBlueString(fmt.Sprintf("$ %s", command)))
 					cmd := exec.Command("bash", "-c", command)
 					cmd.Stdout = os.Stdout
 					cmd.Stderr = os.Stderr
@@ -447,21 +447,21 @@ func doMain() error {
 					return nil
 				}
 
-				err := bash("go get -v github.com/itchio/butler")
-				if err != nil {
-					log.Printf("Could not build butler: %s", err.Error())
-					return nil
-				}
-
 				err = bash("go get -v github.com/itchio/butler/buse/busegen")
 				if err != nil {
-					log.Printf("Could not build busegen: %s", err.Error())
+					log.Print(color.RedString(fmt.Sprintf("Could not build busegen: %s", err.Error())))
 					return nil
 				}
 
 				err = bash("busegen godocs")
 				if err != nil {
-					log.Printf("Could not generate spec: %s", err.Error())
+					log.Print(color.RedString(fmt.Sprintf("Could not generate spec: %s", err.Error())))
+					return nil
+				}
+
+				err := bash("go get -v github.com/itchio/butler")
+				if err != nil {
+					log.Print(color.RedString(fmt.Sprintf("Could not build butler: %s", err.Error())))
 					return nil
 				}
 
