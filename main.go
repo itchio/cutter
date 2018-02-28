@@ -431,17 +431,40 @@ func doMain() error {
 					showDoc(lastMethod)
 				}
 			case "rb":
-				{
-					log.Printf("Building butler...")
-					cmd := exec.Command("bash", "-c", "go get -v -x github.com/itchio/butler")
+				log.Printf("Building butler...")
+				bash := func(command string) error {
+					startTime := time.Now()
+
+					log.Printf("$ %s", command)
+					cmd := exec.Command("bash", "-c", command)
 					cmd.Stdout = os.Stdout
 					cmd.Stderr = os.Stderr
 					err := cmd.Run()
 					if err != nil {
-						log.Printf("Could not build butler: %s", err.Error())
-						return nil
+						return err
 					}
+					log.Printf("(Took %s)", time.Since(startTime))
+					return nil
 				}
+
+				err := bash("go get -v github.com/itchio/butler")
+				if err != nil {
+					log.Printf("Could not build butler: %s", err.Error())
+					return nil
+				}
+
+				err = bash("go get -v github.com/itchio/butler/buse/busegen")
+				if err != nil {
+					log.Printf("Could not build busegen: %s", err.Error())
+					return nil
+				}
+
+				err = bash("busegen godocs")
+				if err != nil {
+					log.Printf("Could not generate spec: %s", err.Error())
+					return nil
+				}
+
 				return ErrCycle
 			case "help", "h":
 				time.Sleep(25 * time.Millisecond)
