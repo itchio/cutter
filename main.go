@@ -51,6 +51,8 @@ func doMain() error {
 		),
 		readline.PcItem("n"),
 		readline.PcItem("st"),
+		readline.PcItem("help"),
+		readline.PcItem("exit"),
 	)
 
 	l, err := readline.NewEx(&readline.Config{
@@ -68,7 +70,7 @@ func doMain() error {
 	defer l.Close()
 	log.SetOutput(color.Output)
 
-	log.Printf("Welcome to buse's dumb CLI")
+	log.Printf("Thanks for flying buse-cli!")
 
 	f := prettyjson.NewFormatter()
 	f.KeyColor = color.New(color.FgBlue, color.Bold)
@@ -96,7 +98,16 @@ func doMain() error {
 	}
 	dbPath := filepath.Join(itchPath, "db", "butler.db")
 
-	log.Printf("Using DB path (%s)", dbPath)
+	dbExists := true
+	_, err = os.Stat(dbPath)
+	if err != nil {
+		dbExists = false
+	}
+
+	log.Printf("Using DB (%s)", dbPath)
+	if !dbExists {
+		log.Printf("(Warning: This file did not exist when buse-cli started up!)")
+	}
 
 	cmd := exec.Command("butler",
 		"service",
@@ -255,6 +266,28 @@ func doMain() error {
 					log.Printf("============================")
 				}
 				l.Refresh()
+			case "help", "h":
+				time.Sleep(25 * time.Millisecond)
+				log.Printf("Commands: ")
+				log.Printf("  r method [params]")
+				log.Printf("    Send an rpc request. params is a JSON object, defaults to {}")
+				log.Printf("")
+				log.Printf("    Example: r Version.Get")
+				log.Printf("    Example: r Test.DoubleTwice {%#v: 4}", "number")
+				log.Printf("")
+				log.Printf("  id [result]")
+				log.Printf("    Reply to one of butler's rpc requests. result is a JSON object, defaults to {}")
+				log.Printf("")
+				log.Printf("  	Example: 0 {%#v: 8}", "number")
+				log.Printf("")
+				log.Printf("  n method [params]: Send an rpc notification. params is a JSON object, defaults to {}")
+				log.Printf("")
+				log.Printf("  st")
+				log.Printf("    Display a stack trace for the last error we got, if available.")
+				log.Printf("")
+				log.Printf("  q")
+				log.Printf("    Quit")
+				l.Refresh()
 			default:
 				return fmt.Errorf("Unknown command '%s'", line)
 			}
@@ -343,6 +376,8 @@ func doMain() error {
 	}
 
 	startTime := time.Now()
+	log.Printf("Type 'help' for the cliff notes.")
+
 	for {
 		line, err := l.Readline()
 		if err != nil {
@@ -357,6 +392,11 @@ func doMain() error {
 				}
 
 				return nil
+			}
+
+			if errors.Is(err, readline.ErrInterrupt) {
+				l.Refresh()
+				continue
 			}
 			return errors.Wrap(err, 0)
 		}
