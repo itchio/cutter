@@ -44,11 +44,21 @@ func doMain() error {
 	normalPrompt := "\033[31m»\033[0m "
 	pendingPrompt := "\033[31m◴\033[0m "
 
+	var completer = readline.NewPrefixCompleter(
+		readline.PcItem("r",
+			readline.PcItem("Version.Get"),
+			readline.PcItem("Session.List"),
+		),
+		readline.PcItem("n"),
+		readline.PcItem("st"),
+	)
+
 	l, err := readline.NewEx(&readline.Config{
 		Prompt:          normalPrompt,
 		HistoryFile:     historyFile,
 		InterruptPrompt: "^C",
 		EOFPrompt:       "exit",
+		AutoComplete:    completer,
 
 		HistorySearchFold: true,
 	})
@@ -138,7 +148,9 @@ func doMain() error {
 	}()
 
 	addr := <-addrChan
-	log.Printf("Connecting to %s...", addr)
+	if *verbose {
+		log.Printf("Connecting to %s...", addr)
+	}
 
 	conn, err := net.Dial("tcp", addr)
 	if err != nil {
@@ -224,9 +236,14 @@ func doMain() error {
 	var id int64
 
 	sendCommand := func(line string) error {
+		line = strings.TrimSpace(line)
+
 		rootTokens := strings.SplitN(line, " ", 2)
 		if len(rootTokens) != 2 {
 			switch line {
+			case "q", "quit", "exit":
+				log.Printf("Bye!")
+				os.Exit(0)
 			case "st":
 				time.Sleep(250 * time.Millisecond)
 				if lastStack == "" {
