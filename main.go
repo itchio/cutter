@@ -29,6 +29,7 @@ import (
 )
 
 var verbose *bool
+var sessionID int64
 
 var ErrCycle = errors.New("cycle")
 
@@ -128,6 +129,12 @@ func doMain() error {
 		for _, req := range buseSpec.Requests {
 			items = append(items, readline.PcItem(req.Method))
 		}
+		for _, t := range buseSpec.StructTypes {
+			items = append(items, readline.PcItem(t.Name))
+		}
+		for _, t := range buseSpec.EnumTypes {
+			items = append(items, readline.PcItem(t.Name))
+		}
 
 		return readline.PcItem("doc", items...)
 	}
@@ -137,6 +144,7 @@ func doMain() error {
 		notificationCompletion(),
 		docCompletion(),
 		readline.PcItem("st"),
+		readline.PcItem("s"),
 		readline.PcItem("help"),
 		readline.PcItem("exit"),
 	)
@@ -220,9 +228,7 @@ func doMain() error {
 			err := json.Unmarshal(line, &m)
 			if err != nil {
 				if *verbose {
-					hang()
 					log.Printf("[butler]: %s", string(line))
-					l.Refresh()
 				}
 				continue
 			}
@@ -300,6 +306,20 @@ func doMain() error {
 		}
 	}
 
+	logEnumValues := func(name string, fields []*spec.EnumValueSpec) {
+		if len(fields) == 0 {
+			log.Printf("%s: none", color.YellowString(name))
+			return
+		}
+
+		log.Printf("%s: ", color.YellowString(name))
+		log.Printf("")
+		for _, field := range fields {
+			log.Printf("  - %s: %s", color.RedString(field.Name), color.BlueString(field.Value))
+			log.Printf("    %s", field.Doc)
+		}
+	}
+
 	requestsByMethod := make(map[string]*spec.RequestSpec)
 	for _, req := range buseSpec.Requests {
 		requestsByMethod[req.Method] = req
@@ -308,12 +328,26 @@ func doMain() error {
 	for _, not := range buseSpec.Notifications {
 		notificationsByMethod[not.Method] = not
 	}
+	structTypesByMethod := make(map[string]*spec.StructTypeSpec)
+	for _, t := range buseSpec.StructTypes {
+		structTypesByMethod[t.Name] = t
+	}
+	enumTypesByMethod := make(map[string]*spec.EnumTypeSpec)
+	for _, t := range buseSpec.EnumTypes {
+		enumTypesByMethod[t.Name] = t
+	}
 
 	hasDoc := func(name string) bool {
 		if _, ok := requestsByMethod[name]; ok {
 			return true
 		}
 		if _, ok := notificationsByMethod[name]; ok {
+			return true
+		}
+		if _, ok := structTypesByMethod[name]; ok {
+			return true
+		}
+		if _, ok := enumTypesByMethod[name]; ok {
 			return true
 		}
 		return false
@@ -343,6 +377,28 @@ func doMain() error {
 			log.Printf(not.Doc)
 			log.Printf("")
 			logFields("Parameters", not.Params.Fields)
+			log.Printf("")
+			return
+		}
+
+		if t, ok := structTypesByMethod[name]; ok {
+			log.Printf("")
+			log.Printf("%s (Struct)", color.GreenString(t.Name))
+			log.Printf("")
+			log.Printf(t.Doc)
+			log.Printf("")
+			logFields("Fields", t.Fields)
+			log.Printf("")
+			return
+		}
+
+		if t, ok := enumTypesByMethod[name]; ok {
+			log.Printf("")
+			log.Printf("%s (Enum)", color.GreenString(t.Name))
+			log.Printf("")
+			log.Printf(t.Doc)
+			log.Printf("")
+			logEnumValues("Values", t.Values)
 			log.Printf("")
 			return
 		}
@@ -451,12 +507,12 @@ func doMain() error {
 			case "st":
 				hang()
 				if lastStack == "" {
-					log.Printf("No stack trace available!")
+					log.Print("No stack trace available!")
 				} else {
-					log.Printf("============================")
-					log.Printf("Last stack trace:")
-					log.Printf(lastStack)
-					log.Printf("============================")
+					log.Print("============================")
+					log.Print("Last stack trace:")
+					log.Print(lastStack)
+					log.Print("============================")
 				}
 				l.Refresh()
 			case "doc":
@@ -491,6 +547,9 @@ func doMain() error {
 				log.Printf("  %s", color.YellowString("st"))
 				log.Printf("    Display a stack trace for the last error we got, if available.")
 				log.Printf("")
+				log.Printf("  %s", color.YellowString("s [id]"))
+				log.Printf("    Set sessionId to [id] automatically for all future requests")
+				log.Printf("")
 				log.Printf("  %s", color.YellowString("q"))
 				log.Printf("    Quit")
 				log.Printf("")
@@ -509,17 +568,38 @@ func doMain() error {
 			return nil
 		}
 
+		if kind == "s" {
+			sessionID, err = strconv.ParseInt(rest, 10, 64)
+			if err != nil {
+				return errors.Wrap(err, 0)
+			}
+
+			log.Print(color.YellowString(fmt.Sprintf("Switched to session %d", sessionID)))
+			return nil
+		}
+
 		req := make(map[string]interface{})
 		req["jsonrpc"] = "2.0"
 
 		var payload string
 		var payloadField string
+		var addSessionID bool
 
 		switch kind {
 		case "r":
 			payloadField = "params"
 			tokens := strings.SplitN(rest, " ", 2)
-			req["method"] = tokens[0]
+			method := tokens[0]
+
+			if rs, ok := requestsByMethod[method]; ok {
+				for _, f := range rs.Params.Fields {
+					if f.Name == "sessionId" {
+						addSessionID = true
+					}
+				}
+			}
+
+			req["method"] = method
 			if len(tokens) >= 2 {
 				payload = tokens[1]
 			} else {
@@ -554,6 +634,22 @@ func doMain() error {
 		if err != nil {
 			return errors.WrapPrefix(err, "while parsing params", 0)
 		}
+
+		// if we have a sessionID set
+		if addSessionID {
+			// ... and it's not included in the payload yet
+			if _, ok := payloadObj["sessionId"]; !ok {
+				if sessionID != 0 {
+					// then add it
+					payloadObj["sessionId"] = sessionID
+				} else {
+					// or tell the user about 's'
+					log.Printf("%s", color.RedString("You're missing a 'sessionId' parameter"))
+					log.Printf("You can use the %s command to set a session ID for all requests", color.GreenString("s [id]"))
+				}
+			}
+		}
+
 		req[payloadField] = payloadObj
 
 		reqBytes, err := json.Marshal(req)
