@@ -43,8 +43,10 @@ func main() {
 
 	for {
 		err := doMain()
-		if err != nil && errors.Is(err, ErrCycle) {
-			continue
+		if err != nil {
+			if errors.Is(err, ErrCycle) {
+				continue
+			}
 		}
 		must(err)
 		break
@@ -135,7 +137,7 @@ func doMain() error {
 	)
 
 	l, err := readline.NewEx(&readline.Config{
-		Prompt:          normalPrompt,
+		Prompt:          "",
 		HistoryFile:     historyFile,
 		InterruptPrompt: "^C",
 		EOFPrompt:       "exit",
@@ -146,10 +148,12 @@ func doMain() error {
 	if err != nil {
 		return errors.Wrap(err, 0)
 	}
-	defer l.Close()
+	defer func() {
+		log.SetOutput(os.Stderr)
+		l.Close()
+	}()
 	log.SetOutput(color.Output)
 
-	log.Printf("Thanks for flying buse-cli!")
 	f := prettyjson.NewFormatter()
 
 	var itchPath = ""
@@ -181,11 +185,6 @@ func doMain() error {
 		dbExists = false
 	}
 
-	log.Printf("Using DB (%s)", dbPath)
-	if !dbExists {
-		log.Printf("(Warning: This file did not exist when buse-cli started up!)")
-	}
-
 	cmd := exec.Command("butler",
 		"service",
 		"-j",
@@ -202,7 +201,10 @@ func doMain() error {
 	go func() {
 		must(cmd.Start())
 		defer cmd.Process.Kill()
-		must(cmd.Wait())
+		err := cmd.Wait()
+		if err != nil {
+			log.Printf("butler exited with error: %s", err.Error())
+		}
 	}()
 
 	addrChan := make(chan string)
@@ -232,6 +234,7 @@ func doMain() error {
 				continue
 			}
 		}
+		must(s.Err())
 	}()
 
 	addr := <-addrChan
@@ -260,6 +263,7 @@ func doMain() error {
 
 		pendingReqs[id] = method
 		l.SetPrompt(pendingPrompt)
+		l.Refresh()
 	}
 	getRequest := func(m map[string]interface{}) string {
 		pendingMutex.Lock()
@@ -347,6 +351,8 @@ func doMain() error {
 	var lastStack = ""
 	go func() {
 		s := bufio.NewScanner(conn)
+		connBuffSize := 16 * 1024 * 1024 // 16MiB
+		s.Buffer(make([]byte, connBuffSize), connBuffSize)
 		for s.Scan() {
 			line := s.Bytes()
 
@@ -357,7 +363,20 @@ func doMain() error {
 
 			if *verbose {
 				log.Printf("← %s", string(prettyLine))
-			} else {
+			}
+
+			prettyResult := func(result interface{}) string {
+				resultString := pretty(result)
+				resultLines := strings.Split(resultString, "\n")
+				if len(resultLines) > 60 {
+					temp := append(resultLines[0:30], color.YellowString("..................... snip ....................."))
+					temp = append(temp, resultLines[len(resultLines)-30:]...)
+					resultLines = temp
+				}
+				return strings.Join(resultLines, "\n")
+			}
+
+			{
 				m := make(map[string]interface{})
 				must(json.Unmarshal(line, &m))
 
@@ -381,7 +400,7 @@ func doMain() error {
 				} else if _, ok := m["result"]; ok {
 					// reply to one or our requests
 					method := getRequest(m)
-					log.Printf("← %s: %s\n", color.GreenString(method), pretty(m["result"]))
+					log.Printf("← %s: %s\n", color.GreenString(method), prettyResult(m["result"]))
 				} else if _, ok := m["id"]; ok {
 					// server request
 					method := m["method"].(string)
@@ -394,12 +413,24 @@ func doMain() error {
 				} else if _, ok := m["params"]; ok {
 					// notification
 					method := m["method"].(string)
-					log.Printf("✉ %s %s\n", color.GreenString(method), pretty(m["params"]))
+					log.Printf("✉ %s %s\n", color.GreenString(method), prettyResult(m["params"]))
 				} else {
 					log.Printf(" Not sure what: %s\n", pretty(m))
 				}
 			}
 			l.Refresh()
+		}
+		err := s.Err()
+		if err != nil {
+			if _, ok := err.(net.Error); ok {
+				if strings.Contains(err.Error(), "use of closed") {
+					// that's ok
+					return
+				}
+				log.Printf("network error: %s", err.Error())
+				return
+			}
+			must(err)
 		}
 	}()
 
@@ -437,10 +468,10 @@ func doMain() error {
 
 					log.Print(color.HiBlueString(fmt.Sprintf("$ %s", command)))
 					cmd := exec.Command("bash", "-c", command)
-					cmd.Stdout = os.Stdout
-					cmd.Stderr = os.Stderr
-					err := cmd.Run()
+					out, err := cmd.CombinedOutput()
 					if err != nil {
+						log.Print(color.RedString("Command failed, log follows:"))
+						log.Print(string(out))
 						return err
 					}
 					log.Printf("(Took %s)", time.Since(startTime))
@@ -588,21 +619,26 @@ func doMain() error {
 		return nil
 	}
 
-	startTime := time.Now()
+	log.Printf("Thanks for flying buse-cli!")
+	log.Printf("Using DB (%s)", dbPath)
+	if !dbExists {
+		log.Printf("(Warning: This file did not exist when buse-cli started up!)")
+	}
 	log.Printf("Type 'help' for the cliff notes.")
+	l.SetPrompt(normalPrompt)
+	l.Refresh()
 
+	startTime := time.Now()
 	for {
 		line, err := l.Readline()
 		if err != nil {
 			if errors.Is(err, io.EOF) {
+				totalDuration := time.Since(startTime)
+				if totalDuration.Seconds() < 0.5 {
+					log.Printf("Got super early EOF, if you're on msys/cygwin you might want to call `winpty buse-cli` instead.")
+				}
 				log.Printf("")
 				log.Printf("Got EOF, bye now!")
-				totalDuration := time.Since(startTime)
-				if totalDuration.Seconds() < 1 {
-					log.Printf("\n")
-					log.Printf("(Note: that was, like, really quick, did something go wrong?)")
-					log.Printf("(If you're on msys/cygwin, you may want to run `winpty buse-cli` instead)")
-				}
 
 				return nil
 			}
