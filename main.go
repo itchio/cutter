@@ -37,6 +37,7 @@ func main() {
 	verbose = app.Flag("verbose", "Show full input & output").Bool()
 
 	log.SetFlags(0)
+	log.SetOutput(color.Output)
 
 	_, err := app.Parse(os.Args[1:])
 	must(err)
@@ -45,6 +46,10 @@ func main() {
 		err := doMain()
 		if err != nil {
 			if errors.Is(err, ErrCycle) {
+				rebuild()
+				log.Printf("")
+				log.Printf("~~~~~~~~~~~ chaaaaaaaaaaaaange places! ~~~~~~~~~~~")
+				log.Printf("")
 				continue
 			}
 		}
@@ -149,10 +154,8 @@ func doMain() error {
 		return errors.Wrap(err, 0)
 	}
 	defer func() {
-		log.SetOutput(os.Stderr)
 		l.Close()
 	}()
-	log.SetOutput(color.Output)
 
 	f := prettyjson.NewFormatter()
 
@@ -217,7 +220,7 @@ func doMain() error {
 			err := json.Unmarshal(line, &m)
 			if err != nil {
 				if *verbose {
-					time.Sleep(250 * time.Millisecond)
+					hang()
 					log.Printf("[butler]: %s", string(line))
 					l.Refresh()
 				}
@@ -317,7 +320,7 @@ func doMain() error {
 	}
 
 	showDoc := func(name string) {
-		time.Sleep(250 * time.Millisecond)
+		hang()
 		defer l.Refresh()
 
 		if req, ok := requestsByMethod[name]; ok {
@@ -356,7 +359,7 @@ func doMain() error {
 		for s.Scan() {
 			line := s.Bytes()
 
-			time.Sleep(time.Millisecond * 250)
+			hang()
 
 			prettyLine, err := f.Format(line)
 			must(err)
@@ -446,7 +449,7 @@ func doMain() error {
 				log.Printf("Bye!")
 				os.Exit(0)
 			case "st":
-				time.Sleep(250 * time.Millisecond)
+				hang()
 				if lastStack == "" {
 					log.Printf("No stack trace available!")
 				} else {
@@ -462,43 +465,9 @@ func doMain() error {
 					showDoc(lastMethod)
 				}
 			case "rb":
-				log.Printf("Rebuilding...")
-				bash := func(command string) error {
-					startTime := time.Now()
-
-					log.Print(color.HiBlueString(fmt.Sprintf("$ %s", command)))
-					cmd := exec.Command("bash", "-c", command)
-					out, err := cmd.CombinedOutput()
-					if err != nil {
-						log.Print(color.RedString("Command failed, log follows:"))
-						log.Print(string(out))
-						return err
-					}
-					log.Printf("(Took %s)", time.Since(startTime))
-					return nil
-				}
-
-				err = bash("go get -v github.com/itchio/butler/buse/busegen")
-				if err != nil {
-					log.Print(color.RedString(fmt.Sprintf("Could not build busegen: %s", err.Error())))
-					return nil
-				}
-
-				err = bash("busegen godocs")
-				if err != nil {
-					log.Print(color.RedString(fmt.Sprintf("Could not generate spec: %s", err.Error())))
-					return nil
-				}
-
-				err := bash("go get -v github.com/itchio/butler")
-				if err != nil {
-					log.Print(color.RedString(fmt.Sprintf("Could not build butler: %s", err.Error())))
-					return nil
-				}
-
 				return ErrCycle
 			case "help", "h":
-				time.Sleep(25 * time.Millisecond)
+				hang()
 				log.Printf("")
 				log.Printf("Commands: ")
 				log.Printf("")
@@ -653,12 +622,9 @@ func doMain() error {
 		err = sendCommand(line)
 		if err != nil {
 			if errors.Is(err, ErrCycle) {
-				log.Printf("")
-				log.Printf("~~~~~~~~~~~ a short time later ~~~~~~~~~~~")
-				log.Printf("")
 				return err
 			}
-			time.Sleep(250 * time.Millisecond)
+			hang()
 			log.Printf("⚠ %s", err.Error())
 			l.Refresh()
 		}
@@ -677,4 +643,45 @@ func must(err error) {
 	} else {
 		log.Fatal(err.Error())
 	}
+}
+
+func rebuild() {
+	hang()
+	log.Printf("Rebuilding...")
+	bash := func(command string) error {
+		startTime := time.Now()
+
+		log.Print(color.HiBlueString(fmt.Sprintf("$ %s", command)))
+		cmd := exec.Command("bash", "-c", command)
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			log.Print(color.RedString("Command failed, log follows:"))
+			log.Print(string(out))
+			return err
+		}
+		log.Printf("(Took %s)", time.Since(startTime))
+		return nil
+	}
+
+	err := bash("go get -v github.com/itchio/butler/buse/busegen")
+	if err != nil {
+		log.Print(color.RedString(fmt.Sprintf("Could not build busegen: %s", err.Error())))
+		return
+	}
+
+	err = bash("busegen godocs")
+	if err != nil {
+		log.Print(color.RedString(fmt.Sprintf("Could not generate spec: %s", err.Error())))
+		return
+	}
+
+	err = bash("go get -v github.com/itchio/butler")
+	if err != nil {
+		log.Print(color.RedString(fmt.Sprintf("Could not build butler: %s", err.Error())))
+		return
+	}
+}
+
+func hang() {
+	time.Sleep(100 * time.Millisecond)
 }
