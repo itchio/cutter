@@ -28,6 +28,7 @@ import (
 	"gopkg.in/alecthomas/kingpin.v2"
 )
 
+var debug bool
 var verbose *bool
 var sessionID int64
 
@@ -472,7 +473,16 @@ func doMain() error {
 				} else if _, ok := m["params"]; ok {
 					// notification
 					method := m["method"].(string)
-					log.Printf("✉ %s %s\n", color.GreenString(method), prettyResult(m["params"]))
+
+					if method == "Log" {
+						if p, ok := m["params"].(map[string]interface{}); ok {
+							if p["level"] != "debug" || debug {
+								log.Printf("✉ %s %s\n", p["level"], p["message"])
+							}
+						}
+					} else {
+						log.Printf("✉ %s %s\n", color.GreenString(method), prettyResult(m["params"]))
+					}
 				} else {
 					log.Printf(" Not sure what: %s\n", pretty(m))
 				}
@@ -522,6 +532,10 @@ func doMain() error {
 				}
 			case "rb":
 				return ErrCycle
+			case "debug":
+				debug = !debug
+				log.Printf("Debug mode is now: %v", debug)
+				return nil
 			case "help", "h":
 				hang()
 				log.Printf("")
@@ -779,5 +793,5 @@ func rebuild() {
 }
 
 func hang() {
-	time.Sleep(100 * time.Millisecond)
+	// time.Sleep(100 * time.Millisecond)
 }
