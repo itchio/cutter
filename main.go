@@ -29,6 +29,7 @@ import (
 )
 
 var debug bool
+var snip = true
 var verbose *bool
 var sessionID int64
 
@@ -427,6 +428,10 @@ func doMain() error {
 
 			prettyResult := func(result interface{}) string {
 				resultString := pretty(result)
+				if !snip {
+					return resultString
+				}
+
 				resultLines := strings.Split(resultString, "\n")
 				if len(resultLines) > 60 {
 					temp := append(resultLines[0:30], color.YellowString("..................... snip ....................."))
@@ -535,6 +540,10 @@ func doMain() error {
 			case "debug":
 				debug = !debug
 				log.Printf("Debug mode is now: %v", debug)
+				return nil
+			case "snip":
+				snip = !snip
+				log.Printf("Snip mode is now: %v", snip)
 				return nil
 			case "help", "h":
 				hang()
