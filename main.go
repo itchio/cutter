@@ -31,7 +31,7 @@ import (
 var debug bool
 var snip = true
 var verbose *bool
-var sessionID int64
+var profileID int64
 
 var ErrCycle = errors.New("cycle")
 
@@ -146,7 +146,7 @@ func doMain() error {
 		notificationCompletion(),
 		docCompletion(),
 		readline.PcItem("st"),
-		readline.PcItem("s"),
+		readline.PcItem("p"),
 		readline.PcItem("help"),
 		readline.PcItem("exit"),
 	)
@@ -570,8 +570,8 @@ func doMain() error {
 				log.Printf("  %s", color.YellowString("st"))
 				log.Printf("    Display a stack trace for the last error we got, if available.")
 				log.Printf("")
-				log.Printf("  %s", color.YellowString("s [id]"))
-				log.Printf("    Set sessionId to [id] automatically for all future requests")
+				log.Printf("  %s", color.YellowString("p [id]"))
+				log.Printf("    Set profileId to [id] automatically for all future requests")
 				log.Printf("")
 				log.Printf("  %s", color.YellowString("q"))
 				log.Printf("    Quit")
@@ -591,13 +591,13 @@ func doMain() error {
 			return nil
 		}
 
-		if kind == "s" {
-			sessionID, err = strconv.ParseInt(rest, 10, 64)
+		if kind == "p" {
+			profileID, err = strconv.ParseInt(rest, 10, 64)
 			if err != nil {
 				return errors.Wrap(err, 0)
 			}
 
-			log.Print(color.YellowString(fmt.Sprintf("Switched to session %d", sessionID)))
+			log.Print(color.YellowString(fmt.Sprintf("Switched to profile %d", profileID)))
 			return nil
 		}
 
@@ -606,7 +606,7 @@ func doMain() error {
 
 		var payload string
 		var payloadField string
-		var addSessionID bool
+		var addProfileID bool
 
 		switch kind {
 		case "r":
@@ -616,8 +616,8 @@ func doMain() error {
 
 			if rs, ok := requestsByMethod[method]; ok {
 				for _, f := range rs.Params.Fields {
-					if f.Name == "sessionId" {
-						addSessionID = true
+					if f.Name == "profileId" {
+						addProfileID = true
 					}
 				}
 			}
@@ -658,17 +658,18 @@ func doMain() error {
 			return errors.WrapPrefix(err, "while parsing params", 0)
 		}
 
-		// if we have a sessionID set
-		if addSessionID {
+		// if that request wants a 'profileId' param
+		if addProfileID {
 			// ... and it's not included in the payload yet
-			if _, ok := payloadObj["sessionId"]; !ok {
-				if sessionID != 0 {
+			if _, ok := payloadObj["profileId"]; !ok {
+				// ... and we have one set!
+				if profileID != 0 {
 					// then add it
-					payloadObj["sessionId"] = sessionID
+					payloadObj["profileId"] = profileID
 				} else {
-					// or tell the user about 's'
-					log.Printf("%s", color.RedString("You're missing a 'sessionId' parameter"))
-					log.Printf("You can use the %s command to set a session ID for all requests", color.GreenString("s [id]"))
+					// or tell the user about 'p'
+					log.Printf("%s", color.RedString("You're missing a 'profileId' parameter"))
+					log.Printf("You can use the %s command to set a profile ID for all requests", color.GreenString("p [id]"))
 				}
 			}
 		}
