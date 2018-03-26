@@ -20,7 +20,7 @@ import (
 	"time"
 
 	"github.com/fatih/color"
-	"github.com/itchio/butler/buse/busegen/spec"
+	"github.com/itchio/butler/butlerd/generous/spec"
 	"github.com/itchio/butler/runner/macutil"
 
 	"github.com/chzyer/readline"
@@ -38,7 +38,7 @@ var profileID int64
 var ErrCycle = errors.New("cycle")
 
 func main() {
-	app := kingpin.New("buse-cli", "A dumb CLI for butler service")
+	app := kingpin.New("cutter", "A CLI for butlerd (the butler daemon)")
 	verbose = app.Flag("verbose", "Show full input & output").Bool()
 
 	log.SetFlags(0)
@@ -64,18 +64,18 @@ func main() {
 }
 
 func doMain() error {
-	historyFile := filepath.Join(os.TempDir(), "buse-cli-history")
+	historyFile := filepath.Join(os.TempDir(), "cutter-history")
 	normalPrompt := "\033[31m»\033[0m "
 	pendingPrompt := "\033[31m◴\033[0m "
 
-	buseSpec := &spec.Spec{}
+	butlerdSpec := &spec.Spec{}
 	readSpec := func() error {
 		gopath := os.Getenv("GOPATH")
 		if gopath == "" {
 			return errors.New("GOPATH not set")
 		}
 
-		specPath := path.Join(gopath, "src", "github.com", "itchio", "butler", "buse", "busegen", "spec", "buse.json")
+		specPath := path.Join(gopath, "src", "github.com", "itchio", "butler", "butlerd", "generous", "spec", "butlerd.json")
 
 		specBytes, err := ioutil.ReadFile(specPath)
 		if err != nil {
@@ -93,7 +93,7 @@ func doMain() error {
 			}
 		}
 
-		err = json.Unmarshal(specBytes, buseSpec)
+		err = json.Unmarshal(specBytes, butlerdSpec)
 		if err != nil {
 			return errors.Wrap(err, 0)
 		}
@@ -102,12 +102,12 @@ func doMain() error {
 
 	err := readSpec()
 	if err != nil {
-		log.Printf("Could not read buse spec: %s", err.Error())
+		log.Printf("Could not read butlerd spec: %s", err.Error())
 	}
 
 	requestCompletion := func() readline.PrefixCompleterInterface {
 		var items []readline.PrefixCompleterInterface
-		for _, req := range buseSpec.Requests {
+		for _, req := range butlerdSpec.Requests {
 			if req.Caller == "client" {
 				items = append(items, readline.PcItem(req.Method))
 			}
@@ -118,7 +118,7 @@ func doMain() error {
 
 	notificationCompletion := func() readline.PrefixCompleterInterface {
 		var items []readline.PrefixCompleterInterface
-		for _, not := range buseSpec.Notifications {
+		for _, not := range butlerdSpec.Notifications {
 			items = append(items, readline.PcItem(not.Method))
 		}
 
@@ -127,16 +127,16 @@ func doMain() error {
 
 	docCompletion := func() readline.PrefixCompleterInterface {
 		var items []readline.PrefixCompleterInterface
-		for _, not := range buseSpec.Notifications {
+		for _, not := range butlerdSpec.Notifications {
 			items = append(items, readline.PcItem(not.Method))
 		}
-		for _, req := range buseSpec.Requests {
+		for _, req := range butlerdSpec.Requests {
 			items = append(items, readline.PcItem(req.Method))
 		}
-		for _, t := range buseSpec.StructTypes {
+		for _, t := range butlerdSpec.StructTypes {
 			items = append(items, readline.PcItem(t.Name))
 		}
-		for _, t := range buseSpec.EnumTypes {
+		for _, t := range butlerdSpec.EnumTypes {
 			items = append(items, readline.PcItem(t.Name))
 		}
 
@@ -217,11 +217,11 @@ func doMain() error {
 	}
 
 	cmd := exec.Command("butler",
-		"service",
+		"daemon",
 		"-j",
 		"--dbpath", dbPath,
 	)
-	cmd.Stdin = strings.NewReader(fmt.Sprintf(`{"secret": %#v}%s`, secret, "\n"))
+	cmd.Stdin = strings.NewReader(fmt.Sprintf(`{"type": "butlerd/secret-result", "secret": %#v}%s`, secret, "\n"))
 
 	pr, pw, err := os.Pipe()
 	if err != nil {
@@ -254,14 +254,13 @@ func doMain() error {
 				continue
 			}
 
-			if m["type"] == "result" {
-				valMap := m["value"].(map[string]interface{})
-				if valMap["type"] == "server-listening" {
-					addrChan <- valMap["address"].(string)
-				}
-			} else {
-				log.Printf("[butler]: %s", string(line))
+			switch m["type"] {
+			case "butlerd/secret-request":
 				continue
+			case "butlerd/listen-notification":
+				addrChan <- m["address"].(string)
+			case "log":
+				// ignore
 			}
 		}
 		must(s.Err())
@@ -342,19 +341,19 @@ func doMain() error {
 	}
 
 	requestsByMethod := make(map[string]*spec.RequestSpec)
-	for _, req := range buseSpec.Requests {
+	for _, req := range butlerdSpec.Requests {
 		requestsByMethod[req.Method] = req
 	}
 	notificationsByMethod := make(map[string]*spec.NotificationSpec)
-	for _, not := range buseSpec.Notifications {
+	for _, not := range butlerdSpec.Notifications {
 		notificationsByMethod[not.Method] = not
 	}
 	structTypesByMethod := make(map[string]*spec.StructTypeSpec)
-	for _, t := range buseSpec.StructTypes {
+	for _, t := range butlerdSpec.StructTypes {
 		structTypesByMethod[t.Name] = t
 	}
 	enumTypesByMethod := make(map[string]*spec.EnumTypeSpec)
-	for _, t := range buseSpec.EnumTypes {
+	for _, t := range butlerdSpec.EnumTypes {
 		enumTypesByMethod[t.Name] = t
 	}
 
@@ -737,10 +736,10 @@ func doMain() error {
 		return nil
 	}
 
-	log.Printf("Thanks for flying buse-cli!")
+	log.Printf("Thanks for flying with cutter!")
 	log.Printf("Using DB (%s)", dbPath)
 	if !dbExists {
-		log.Printf("(Warning: This file did not exist when buse-cli started up!)")
+		log.Printf("(Warning: This file did not exist when cutter started up!)")
 	}
 	log.Printf("Type 'help' for the cliff notes.")
 	l.SetPrompt(normalPrompt)
@@ -753,7 +752,7 @@ func doMain() error {
 			if errors.Is(err, io.EOF) {
 				totalDuration := time.Since(startTime)
 				if totalDuration.Seconds() < 0.5 {
-					log.Printf("Got super early EOF, if you're on msys/cygwin you might want to call `winpty buse-cli` instead.")
+					log.Printf("Got super early EOF, if you're on msys/cygwin you might want to call `winpty cutter` instead.")
 				}
 				log.Printf("")
 				log.Printf("Got EOF, bye now!")
@@ -812,13 +811,13 @@ func rebuild() {
 		return nil
 	}
 
-	err := bash("go get -v github.com/itchio/butler/buse/busegen")
+	err := bash("go get -v github.com/itchio/butler/butlerd/generous")
 	if err != nil {
-		log.Print(color.RedString(fmt.Sprintf("Could not build busegen: %s", err.Error())))
+		log.Print(color.RedString(fmt.Sprintf("Could not build generous: %s", err.Error())))
 		return
 	}
 
-	err = bash("busegen godocs")
+	err = bash("generous godocs")
 	if err != nil {
 		log.Print(color.RedString(fmt.Sprintf("Could not generate spec: %s", err.Error())))
 		return
