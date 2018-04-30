@@ -13,7 +13,6 @@ import (
 	"os/exec"
 	"path"
 	"path/filepath"
-	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -21,7 +20,6 @@ import (
 
 	"github.com/fatih/color"
 	"github.com/itchio/butler/butlerd/generous/spec"
-	"github.com/itchio/butler/runner/macutil"
 
 	"github.com/chzyer/readline"
 	"github.com/go-errors/errors"
@@ -171,28 +169,7 @@ func doMain() error {
 
 	f := prettyjson.NewFormatter()
 
-	var itchPath = ""
-	switch runtime.GOOS {
-
-	case "windows":
-		appData := os.Getenv("APPDATA")
-		itchPath = filepath.Join(appData, "itch")
-	case "linux":
-		configPath := os.Getenv("XDG_CONFIG_HOME")
-		if configPath != "" {
-			itchPath = filepath.Join(configPath, "itch")
-		} else {
-			homePath := os.Getenv("HOME")
-			itchPath = filepath.Join(homePath, ".config", "itch")
-		}
-	case "darwin":
-		appSupport, err := macutil.GetApplicationSupportPath()
-		if err != nil {
-			return errors.Wrap(err, 0)
-		}
-		itchPath = filepath.Join(appSupport, "itch")
-	}
-	dbPath := filepath.Join(itchPath, "db", "butler.db")
+	dbPath := filepath.Join(getItchPath(), "db", "butler.db")
 
 	dbExists := true
 	_, err = os.Stat(dbPath)
