@@ -32,12 +32,14 @@ var debug bool
 var snip = true
 var verbose *bool
 var profileID int64
+var cliDbPath string
 
 var ErrCycle = errors.New("cycle")
 
 func main() {
 	app := kingpin.New("cutter", "A CLI for butlerd (the butler daemon)")
 	verbose = app.Flag("verbose", "Show full input & output").Bool()
+	app.Flag("dbpath", "Explicit path for database").StringVar(&cliDbPath)
 
 	log.SetFlags(0)
 	log.SetOutput(color.Output)
@@ -169,7 +171,11 @@ func doMain() error {
 
 	f := prettyjson.NewFormatter()
 
-	dbPath := filepath.Join(getItchPath(), "db", "butler.db")
+	dbPath := cliDbPath
+
+	if dbPath == "" {
+		dbPath = filepath.Join(getItchPath(), "db", "butler.db")
+	}
 
 	dbExists := true
 	_, err = os.Stat(dbPath)
