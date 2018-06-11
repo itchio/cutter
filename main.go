@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"context"
 	"crypto/sha256"
 	"encoding/json"
 	"fmt"
@@ -33,13 +34,16 @@ var snip = true
 var verbose bool
 var profileID int64
 var cliDbPath string
+var execSingle string
 
 var ErrCycle = errors.New("cycle")
 
 func main() {
 	app := kingpin.New("cutter", "A CLI for butlerd (the butler daemon)")
 	app.Flag("verbose", "Show full input & output").BoolVar(&verbose)
+	app.Flag("debug", "Show full input & output").BoolVar(&debug)
 	app.Flag("dbpath", "Explicit path for database").StringVar(&cliDbPath)
+	app.Flag("exec", "Execute a single command and quit").Short('e').StringVar(&execSingle)
 
 	log.SetFlags(0)
 	log.SetOutput(color.Output)
@@ -64,6 +68,8 @@ func main() {
 }
 
 func doMain() error {
+	singleCtx, singleCancel := context.WithCancel(context.Background())
+	defer singleCancel()
 	historyFile := filepath.Join(os.TempDir(), "cutter-history")
 	normalPrompt := "\033[31m»\033[0m "
 	pendingPrompt := "\033[31m◴\033[0m "
@@ -211,7 +217,11 @@ func doMain() error {
 		return errors.Wrap(err, 0)
 	}
 	cmd.Stdout = pw
-	cmd.Stderr = l.Stderr()
+	if execSingle == "" {
+		cmd.Stderr = l.Stderr()
+	} else {
+		cmd.Stderr = os.Stderr
+	}
 
 	go func() {
 		must(cmd.Start())
@@ -242,8 +252,10 @@ func doMain() error {
 				continue
 			case "butlerd/listen-notification":
 				addrChan <- m["address"].(string)
-			case "log":
-				// ignore
+			default:
+				if verbose {
+					log.Printf("[butler]: %s", string(line))
+				}
 			}
 		}
 		must(s.Err())
@@ -460,13 +472,23 @@ func doMain() error {
 						} else {
 							lastStack = ""
 						}
+						singleCancel()
 					} else {
 						log.Printf("\n Error we can't unwrap: %s\n", pretty(m))
 					}
 				} else if _, ok := m["result"]; ok {
 					// reply to one or our requests
 					method := getRequest(m)
-					log.Printf("← %s: %s\n", color.GreenString(method), prettyResult(m["result"]))
+					if execSingle != "" {
+						jsonBytes, err := json.MarshalIndent(m["result"], "", "  ")
+						if err != nil {
+							panic(err)
+						}
+						fmt.Fprintf(os.Stdout, "%s", string(jsonBytes))
+						singleCancel()
+					} else {
+						log.Printf("← %s: %s\n", color.GreenString(method), prettyResult(m["result"]))
+					}
 				} else if _, ok := m["id"]; ok {
 					// server request
 					method := m["method"].(string)
@@ -497,7 +519,16 @@ func doMain() error {
 							}
 						}
 					} else {
-						log.Printf("✉ %s %s\n", color.GreenString(method), prettyResult(m["params"]))
+						if execSingle != "" {
+							jsonBytes, err := json.MarshalIndent(m["params"], "", "  ")
+							if err != nil {
+								panic(err)
+							}
+							fmt.Fprintf(os.Stdout, "%s", string(jsonBytes))
+							singleCancel()
+						} else {
+							log.Printf("✉ %s %s\n", color.GreenString(method), prettyResult(m["params"]))
+						}
 					}
 				} else {
 					log.Printf(" Not sure what: %s\n", pretty(m))
@@ -717,6 +748,15 @@ func doMain() error {
 		}
 
 		return nil
+	}
+
+	if execSingle != "" {
+		err = sendCommand(execSingle)
+		if err != nil {
+			panic(err)
+		}
+		<-singleCtx.Done()
+		os.Exit(0)
 	}
 
 	log.Printf("Thanks for flying with cutter!")
