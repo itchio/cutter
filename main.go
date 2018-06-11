@@ -30,7 +30,7 @@ import (
 
 var debug bool
 var snip = true
-var verbose *bool
+var verbose bool
 var profileID int64
 var cliDbPath string
 
@@ -38,7 +38,7 @@ var ErrCycle = errors.New("cycle")
 
 func main() {
 	app := kingpin.New("cutter", "A CLI for butlerd (the butler daemon)")
-	verbose = app.Flag("verbose", "Show full input & output").Bool()
+	app.Flag("verbose", "Show full input & output").BoolVar(&verbose)
 	app.Flag("dbpath", "Explicit path for database").StringVar(&cliDbPath)
 
 	log.SetFlags(0)
@@ -231,7 +231,7 @@ func doMain() error {
 			m := make(map[string]interface{})
 			err := json.Unmarshal(line, &m)
 			if err != nil {
-				if *verbose {
+				if verbose {
 					log.Printf("[butler]: %s", string(line))
 				}
 				continue
@@ -250,7 +250,7 @@ func doMain() error {
 	}()
 
 	addr := <-addrChan
-	if *verbose {
+	if verbose {
 		log.Printf("Connecting to %s...", addr)
 	}
 
@@ -423,7 +423,7 @@ func doMain() error {
 			prettyLine, err := f.Format(line)
 			must(err)
 
-			if *verbose {
+			if verbose {
 				log.Printf("← %s", string(prettyLine))
 			}
 
@@ -692,7 +692,7 @@ func doMain() error {
 			return errors.WrapPrefix(err, "while marshalling request", 0)
 		}
 
-		if *verbose {
+		if verbose {
 			prettyInput, err := f.Format(reqBytes)
 			if err != nil {
 				return errors.WrapPrefix(err, "while pretty-printing request", 0)
