@@ -3,7 +3,6 @@ package main
 import (
 	"bufio"
 	"context"
-	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -25,7 +24,6 @@ import (
 	"github.com/chzyer/readline"
 	"github.com/go-errors/errors"
 	prettyjson "github.com/hokaccha/go-prettyjson"
-	uuid "github.com/satori/go.uuid"
 	"gopkg.in/alecthomas/kingpin.v2"
 )
 
@@ -189,28 +187,15 @@ func doMain() error {
 		dbExists = false
 	}
 
-	generateSecret := func() (string, error) {
-		res := ""
-		for i := 0; i < 16; i++ {
-			u, err := uuid.NewV4()
-			if err != nil {
-				return "", errors.Wrap(err, 0)
-			}
-			res += u.String()
-		}
-		return res, nil
-	}
-	secret, err := generateSecret()
-	if err != nil {
-		return errors.Wrap(err, 0)
-	}
+	pidString := strconv.FormatInt(int64(os.Getpid()), 10)
 
 	cmd := exec.Command("butler",
 		"daemon",
-		"-j",
+		"--json",
+		"--transport", "tcp",
+		"--destiny-pid", pidString,
 		"--dbpath", dbPath,
 	)
-	cmd.Stdin = strings.NewReader(fmt.Sprintf(`{"type": "butlerd/secret-result", "secret": %#v}%s`, secret, "\n"))
 
 	pr, pw, err := os.Pipe()
 	if err != nil {
@@ -248,10 +233,9 @@ func doMain() error {
 			}
 
 			switch m["type"] {
-			case "butlerd/secret-request":
-				continue
 			case "butlerd/listen-notification":
-				addrChan <- m["address"].(string)
+				tcpBlock := m["tcp"].(map[string]interface{})
+				addrChan <- tcpBlock["address"].(string)
 			default:
 				if verbose {
 					log.Printf("[butler]: %s", string(line))
@@ -492,15 +476,6 @@ func doMain() error {
 				} else if _, ok := m["id"]; ok {
 					// server request
 					method := m["method"].(string)
-					if method == "Handshake" {
-						message := (m["params"].(map[string]interface{}))["message"].(string)
-						sigBytes := sha256.Sum256([]byte(secret + message))
-						sigString := fmt.Sprintf("%x", sigBytes)
-						resp := fmt.Sprintf(`{"jsonrpc": "2.0", "id": %d, "result": {"signature": %#v}}`, int64(m["id"].(float64)), sigString)
-						_, err = conn.Write([]byte(resp + "\n"))
-						must(err)
-						continue
-					}
 
 					lastMethod = method
 					log.Printf("→ %s: %s\n", color.GreenString(method), pretty(m["params"]))
