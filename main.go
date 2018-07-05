@@ -217,6 +217,8 @@ func doMain() error {
 		}
 	}()
 
+	var secret string
+
 	addrChan := make(chan string)
 	go func() {
 		s := bufio.NewScanner(pr)
@@ -234,6 +236,7 @@ func doMain() error {
 
 			switch m["type"] {
 			case "butlerd/listen-notification":
+				secret = m["secret"].(string)
 				tcpBlock := m["tcp"].(map[string]interface{})
 				addrChan <- tcpBlock["address"].(string)
 			default:
@@ -463,15 +466,17 @@ func doMain() error {
 				} else if _, ok := m["result"]; ok {
 					// reply to one or our requests
 					method := getRequest(m)
-					if execSingle != "" {
-						jsonBytes, err := json.MarshalIndent(m["result"], "", "  ")
-						if err != nil {
-							panic(err)
+					if method != "Meta.Authenticate" {
+						if execSingle != "" {
+							jsonBytes, err := json.MarshalIndent(m["result"], "", "  ")
+							if err != nil {
+								panic(err)
+							}
+							fmt.Fprintf(os.Stdout, "%s", string(jsonBytes))
+							singleCancel()
+						} else {
+							log.Printf("← %s: %s\n", color.GreenString(method), prettyResult(m["result"]))
 						}
-						fmt.Fprintf(os.Stdout, "%s", string(jsonBytes))
-						singleCancel()
-					} else {
-						log.Printf("← %s: %s\n", color.GreenString(method), prettyResult(m["result"]))
 					}
 				} else if _, ok := m["id"]; ok {
 					// server request
@@ -723,6 +728,11 @@ func doMain() error {
 		}
 
 		return nil
+	}
+
+	err = sendCommand(fmt.Sprintf(`r Meta.Authenticate {"secret": %q}`, secret))
+	if err != nil {
+		panic(err)
 	}
 
 	if execSingle != "" {
