@@ -33,6 +33,7 @@ var verbose bool
 var profileID int64
 var cliDbPath string
 var execSingle string
+var appName string
 
 var ErrCycle = errors.New("cycle")
 
@@ -41,6 +42,7 @@ func main() {
 	app.Flag("verbose", "Show full input & output").BoolVar(&verbose)
 	app.Flag("debug", "Show full input & output").BoolVar(&debug)
 	app.Flag("dbpath", "Explicit path for database").StringVar(&cliDbPath)
+	app.Flag("appname", "Application to open the database for").Default("kitch").StringVar(&appName)
 	app.Flag("exec", "Execute a single command and quit").Short('e').StringVar(&execSingle)
 
 	log.SetFlags(0)
@@ -178,7 +180,7 @@ func doMain() error {
 	dbPath := cliDbPath
 
 	if dbPath == "" {
-		dbPath = filepath.Join(getItchPath(), "db", "butler.db")
+		dbPath = filepath.Join(getAppPath(appName), "db", "butler.db")
 	}
 
 	dbExists := true

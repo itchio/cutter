@@ -9,18 +9,18 @@ import (
 	"runtime"
 )
 
-func getItchPath() string {
+func getAppPath(appName string) string {
 	switch runtime.GOOS {
 	case "windows":
 		appData := os.Getenv("APPDATA")
-		return filepath.Join(appData, "itch")
+		return filepath.Join(appData, appName)
 	case "linux":
 		configPath := os.Getenv("XDG_CONFIG_HOME")
 		if configPath != "" {
-			return filepath.Join(configPath, "itch")
+			return filepath.Join(configPath, appName)
 		} else {
 			homePath := os.Getenv("HOME")
-			return filepath.Join(homePath, ".config", "itch")
+			return filepath.Join(homePath, ".config", appName)
 		}
 	}
 
