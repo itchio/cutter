@@ -412,6 +412,7 @@ func doMain() error {
 
 	var lastMethod = ""
 	var lastStack = ""
+	var lastData map[string]interface{}
 	go func() {
 		s := bufio.NewScanner(conn)
 		connBuffSize := 16 * 1024 * 1024 // 16MiB
@@ -456,6 +457,7 @@ func doMain() error {
 							log.Printf("(Use the 'doc' command to learn more about %s)", color.GreenString(method))
 						}
 						if data, ok := e["data"].(map[string]interface{}); ok {
+							lastData = data
 							lastStack = data["stack"].(string)
 							log.Printf("(Use the 'st' command to see a full stack trace)")
 						} else {
@@ -543,6 +545,15 @@ func doMain() error {
 			case "q", "quit", "exit":
 				log.Printf("Bye!")
 				os.Exit(0)
+			case "ed":
+				if lastData == nil {
+					log.Printf("No last error data available")
+				} else {
+					log.Print("============================")
+					log.Print("Last error data:")
+					log.Print(pretty(lastData))
+					log.Print("============================")
+				}
 			case "st":
 				hang()
 				if lastStack == "" {
