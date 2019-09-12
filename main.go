@@ -28,6 +28,7 @@ import (
 )
 
 var debug bool
+var butlerPath string
 var snip = true
 var verbose bool
 var profileID int64
@@ -39,6 +40,7 @@ var ErrCycle = errors.New("cycle")
 
 func main() {
 	app := kingpin.New("cutter", "A CLI for butlerd (the butler daemon)")
+	app.Arg("butler-path", "Path to butler repository").Required().StringVar(&butlerPath)
 	app.Flag("verbose", "Show full input & output").BoolVar(&verbose)
 	app.Flag("debug", "Show full input & output").BoolVar(&debug)
 	app.Flag("dbpath", "Explicit path for database").StringVar(&cliDbPath)
@@ -76,27 +78,11 @@ func doMain() error {
 
 	butlerdSpec := &spec.Spec{}
 	readSpec := func() error {
-		gopath := os.Getenv("GOPATH")
-		if gopath == "" {
-			return errors.New("GOPATH not set")
-		}
-
-		specPath := path.Join(gopath, "src", "github.com", "itchio", "butler", "butlerd", "generous", "spec", "butlerd.json")
+		specPath := path.Join(butlerPath, "butlerd", "generous", "spec", "butlerd.json")
 
 		specBytes, err := ioutil.ReadFile(specPath)
 		if err != nil {
-			if os.IsNotExist(err) {
-				// try something funky for msys2 setups
-				output, oErr := exec.Command("cygpath", "-w", specPath).CombinedOutput()
-				if oErr == nil {
-					specPath = strings.TrimSpace(string(output))
-					specBytes, err = ioutil.ReadFile(specPath)
-				}
-			}
-
-			if err != nil {
-				return errors.Wrap(err, 0)
-			}
+			return errors.Wrap(err, 0)
 		}
 
 		err = json.Unmarshal(specBytes, butlerdSpec)
@@ -822,6 +808,7 @@ func rebuild() {
 
 		log.Print(color.HiBlueString(fmt.Sprintf("$ %s", command)))
 		cmd := exec.Command("bash", "-c", command)
+		cmd.Dir = butlerPath
 		out, err := cmd.CombinedOutput()
 		if err != nil {
 			log.Print(color.RedString("Command failed, log follows:"))
@@ -832,7 +819,7 @@ func rebuild() {
 		return nil
 	}
 
-	err := bash("go get -v github.com/itchio/butler/butlerd/generous")
+	err := bash("go get -v ./butlerd/generous")
 	if err != nil {
 		log.Print(color.RedString(fmt.Sprintf("Could not build generous: %s", err.Error())))
 		return
@@ -844,7 +831,7 @@ func rebuild() {
 		return
 	}
 
-	err = bash("go get -v github.com/itchio/butler")
+	err = bash("go get -v")
 	if err != nil {
 		log.Print(color.RedString(fmt.Sprintf("Could not build butler: %s", err.Error())))
 		return
