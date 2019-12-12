@@ -45,6 +45,7 @@ func main() {
 	app.Flag("debug", "Show full input & output").BoolVar(&debug)
 	app.Flag("dbpath", "Explicit path for database").StringVar(&cliDbPath)
 	app.Flag("appname", "Application to open the database for").Default("kitch").StringVar(&appName)
+	app.Flag("profile", "Profile ID to add to requests that need one").Short('p').Default("0").Int64Var(&profileID)
 	app.Flag("exec", "Execute a single command and quit").Short('e').StringVar(&execSingle)
 
 	log.SetFlags(0)
