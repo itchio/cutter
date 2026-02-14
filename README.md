@@ -1,21 +1,71 @@
 # cutter
 
-cutter is a CLI for butlerd, the butler daemon.
+Cutter is an interactive REPL/CLI for communicating with
+[butlerd](https://docs.itch.zone/butlerd/master/) (the butler daemon) over
+JSON-RPC via TCP. It launches a `butler daemon` subprocess, connects to it, and
+lets you send requests, notifications, and receive responses interactively.
 
-### Features
+## Usage
 
-  * Auto-completion for requests and notifications (`r YYY<TAB>`)
-  * Inline documentation (via `doc`)
-  * All the good readline stuff (history via `<C-r>` etc.)
-
-### Usage
-
-```bash
-cutter
+```
+cutter <butler-path> [flags]
 ```
 
-### Links
+### Arguments
+
+- `butler-path` (required) — path to the butler repository (used for loading the spec and rebuilding)
+
+### Flags
+
+| Flag | Description |
+|------|-------------|
+| `--verbose` | Show full JSON input/output |
+| `--debug` | Show debug log messages |
+| `--dbpath` | Explicit path for database |
+| `--appname` | Application name for database lookup (default: `kitch`) |
+| `-p, --profile` | Profile ID to auto-inject into requests that need one (default: `0`) |
+| `-e, --exec` | Execute a single command and exit (non-interactive mode) |
+
+### Examples
+
+```bash
+# Start an interactive session
+cutter ~/src/butler
+
+# Execute a single command and exit
+cutter ~/src/butler -e "r Version.Get"
+
+# Start with verbose output and a specific profile
+cutter ~/src/butler --verbose -p 1
+```
+
+## Interactive commands
+
+| Command | Description |
+|---------|-------------|
+| `r <method> [params]` | Send a JSON-RPC request. `params` is a JSON object, defaults to `{}` |
+| `n <method> [params]` | Send a JSON-RPC notification. `params` is a JSON object, defaults to `{}` |
+| `<id> [result]` | Reply to a server request. `result` is a JSON object, defaults to `{}` |
+| `doc [method]` | Show documentation for a method or type (defaults to last request sent/received) |
+| `st` | Show stack trace from last error |
+| `ed` | Show last error data |
+| `p <id>` | Set profile ID for all future requests |
+| `rb` | Rebuild butler and restart the daemon |
+| `debug` | Toggle debug mode |
+| `snip` | Toggle snip mode |
+| `help` | Show help |
+| `q` / `exit` | Quit |
+
+### Command examples
+
+```
+r Version.Get
+r Test.DoubleTwice {"number": 4}
+0 {"number": 8}
+doc Version.Get
+p 1
+```
+## Links
 
   * <https://github.com/itchio/butler>
-  * <https://docs.itch.ovh/butlerd/master/>
-
+  * <https://docs.itch.zone/butlerd/master/>
