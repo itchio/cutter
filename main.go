@@ -24,7 +24,7 @@ import (
 	"github.com/chzyer/readline"
 	"github.com/go-errors/errors"
 	prettyjson "github.com/hokaccha/go-prettyjson"
-	"gopkg.in/alecthomas/kingpin.v2"
+	"github.com/alecthomas/kingpin/v2"
 )
 
 var debug bool
