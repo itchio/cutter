@@ -3,12 +3,16 @@ package main
 import (
 	"bufio"
 	"context"
+	"crypto/rand"
+	"crypto/sha256"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
 	"io/ioutil"
 	"log"
 	"net"
+	"net/url"
 	"os"
 	"os/exec"
 	"path"
@@ -142,6 +146,7 @@ func doMain() error {
 		docCompletion(),
 		readline.PcItem("st"),
 		readline.PcItem("p"),
+		readline.PcItem("login"),
 		readline.PcItem("help"),
 		readline.PcItem("exit"),
 	)
@@ -281,6 +286,30 @@ func doMain() error {
 			return "<Unknown request>"
 		}
 		return pr
+	}
+
+	responseChans := make(map[int64]chan map[string]interface{})
+	var responseMutex sync.Mutex
+
+	registerResponseChan := func(id int64) chan map[string]interface{} {
+		responseMutex.Lock()
+		defer responseMutex.Unlock()
+		ch := make(chan map[string]interface{}, 1)
+		responseChans[id] = ch
+		return ch
+	}
+
+	unregisterResponseChan := func(id int64) {
+		responseMutex.Lock()
+		defer responseMutex.Unlock()
+		delete(responseChans, id)
+	}
+
+	getResponseChan := func(id int64) (chan map[string]interface{}, bool) {
+		responseMutex.Lock()
+		defer responseMutex.Unlock()
+		ch, ok := responseChans[id]
+		return ch, ok
 	}
 
 	logFields := func(name string, fields []*spec.FieldSpec) {
@@ -437,6 +466,10 @@ func doMain() error {
 
 				if _, ok := m["error"]; ok {
 					if e, ok := m["error"].(map[string]interface{}); ok {
+						reqId := int64(m["id"].(float64))
+						if ch, ok := getResponseChan(reqId); ok {
+							ch <- m
+						}
 						method := getRequest(m)
 						log.Printf("⚠ %s (Code %d):", color.GreenString(method), int64(e["code"].(float64)))
 						log.Printf("    %s", color.RedString(e["message"].(string)))
@@ -456,6 +489,10 @@ func doMain() error {
 					}
 				} else if _, ok := m["result"]; ok {
 					// reply to one or our requests
+					reqId := int64(m["id"].(float64))
+					if ch, ok := getResponseChan(reqId); ok {
+						ch <- m
+					}
 					method := getRequest(m)
 					if method != "Meta.Authenticate" {
 						if execSingle != "" {
@@ -523,6 +560,24 @@ func doMain() error {
 
 	var id int64
 
+	base64UrlEncode := func(data []byte) string {
+		return base64.RawURLEncoding.EncodeToString(data)
+	}
+
+	generateCodeVerifier := func() (string, error) {
+		b := make([]byte, 32)
+		_, err := rand.Read(b)
+		if err != nil {
+			return "", err
+		}
+		return base64UrlEncode(b), nil
+	}
+
+	generateCodeChallenge := func(verifier string) string {
+		h := sha256.Sum256([]byte(verifier))
+		return base64UrlEncode(h[:])
+	}
+
 	sendCommand := func(line string) error {
 		line = strings.TrimSpace(line)
 
@@ -567,6 +622,132 @@ func doMain() error {
 				snip = !snip
 				log.Printf("Snip mode is now: %v", snip)
 				return nil
+			case "login":
+				hang()
+				codeVerifier, err := generateCodeVerifier()
+				if err != nil {
+					log.Printf("⚠ Failed to generate code verifier: %s", err.Error())
+					l.Refresh()
+					return nil
+				}
+				codeChallenge := generateCodeChallenge(codeVerifier)
+
+				stateBytes := make([]byte, 16)
+				_, err = rand.Read(stateBytes)
+				if err != nil {
+					log.Printf("⚠ Failed to generate state: %s", err.Error())
+					l.Refresh()
+					return nil
+				}
+				state := base64UrlEncode(stateBytes)
+
+				clientID := "85252daf268d27fbefac93e1ac462bfd"
+				redirectURI := "itch://oauth-callback"
+
+				oauthURL := fmt.Sprintf(
+					"https://itch.io/user/oauth?client_id=%s&scope=itch&redirect_uri=%s&state=%s&response_type=code&code_challenge=%s&code_challenge_method=S256",
+					clientID,
+					url.QueryEscape(redirectURI),
+					url.QueryEscape(state),
+					url.QueryEscape(codeChallenge),
+				)
+
+				log.Printf("")
+				log.Printf("Open this URL in your browser to log in:")
+				log.Printf("")
+				log.Printf("  %s", color.BlueString(oauthURL))
+				log.Printf("")
+				log.Printf("After authorizing, paste the code or the full callback URL below.")
+				log.Printf("")
+
+				l.SetPrompt("Paste authorization code: ")
+				l.Refresh()
+				input, err := l.Readline()
+				l.SetPrompt(normalPrompt)
+				if err != nil {
+					l.Refresh()
+					return nil
+				}
+				input = strings.TrimSpace(input)
+				if input == "" {
+					log.Printf("Login cancelled.")
+					l.Refresh()
+					return nil
+				}
+
+				// Extract code from input - could be a raw code or a full callback URL
+				code := input
+				if strings.Contains(input, "://") {
+					parsed, err := url.Parse(input)
+					if err == nil {
+						if c := parsed.Query().Get("code"); c != "" {
+							code = c
+						}
+					}
+				}
+
+				// Send Profile.LoginWithOAuthCode request and wait for response
+				loginReqID := id
+				id++
+
+				respCh := registerResponseChan(loginReqID)
+				defer unregisterResponseChan(loginReqID)
+
+				loginReq := map[string]interface{}{
+					"jsonrpc": "2.0",
+					"id":      loginReqID,
+					"method":  "Profile.LoginWithOAuthCode",
+					"params": map[string]interface{}{
+						"code":         code,
+						"codeVerifier": codeVerifier,
+						"redirectUri":  redirectURI,
+						"clientId":     clientID,
+					},
+				}
+
+				loginReqBytes, err := json.Marshal(loginReq)
+				if err != nil {
+					log.Printf("⚠ Failed to marshal login request: %s", err.Error())
+					l.Refresh()
+					return nil
+				}
+
+				_, err = conn.Write(append(loginReqBytes, '\n'))
+				if err != nil {
+					log.Printf("⚠ Failed to send login request: %s", err.Error())
+					l.Refresh()
+					return nil
+				}
+				pushRequest(loginReqID, "Profile.LoginWithOAuthCode")
+
+				log.Printf("Waiting for login response...")
+
+				select {
+				case resp := <-respCh:
+					if errObj, ok := resp["error"]; ok {
+						if e, ok := errObj.(map[string]interface{}); ok {
+							log.Printf("⚠ Login failed: %s", color.RedString(e["message"].(string)))
+						}
+					} else if result, ok := resp["result"]; ok {
+						if r, ok := result.(map[string]interface{}); ok {
+							if profile, ok := r["profile"].(map[string]interface{}); ok {
+								if pid, ok := profile["id"].(float64); ok {
+									profileID = int64(pid)
+									username := ""
+									if user, ok := profile["user"].(map[string]interface{}); ok {
+										if u, ok := user["username"].(string); ok {
+											username = u
+										}
+									}
+									log.Printf("Logged in as %s (profile %d)", color.GreenString(username), profileID)
+								}
+							}
+						}
+					}
+				case <-time.After(30 * time.Second):
+					log.Printf("⚠ Login timed out after 30 seconds")
+				}
+				l.Refresh()
 			case "help", "h":
 				hang()
 				log.Printf("")
@@ -594,6 +775,9 @@ func doMain() error {
 				log.Printf("")
 				log.Printf("  %s", color.YellowString("p [id]"))
 				log.Printf("    Set profileId to [id] automatically for all future requests")
+				log.Printf("")
+				log.Printf("  %s", color.YellowString("login"))
+				log.Printf("    Authenticate with itch.io using OAuth 2.0 + PKCE")
 				log.Printf("")
 				log.Printf("  %s", color.YellowString("q"))
 				log.Printf("    Quit")
