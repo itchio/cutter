@@ -381,7 +381,7 @@ func doMain() error {
 			log.Printf("")
 			log.Printf("%s (%s Request)", color.GreenString(req.Method), req.Caller)
 			log.Printf("")
-			log.Printf(req.Doc)
+			log.Printf("%s", req.Doc)
 			log.Printf("")
 			logFields("Parameters", req.Params.Fields)
 			log.Printf("")
@@ -394,7 +394,7 @@ func doMain() error {
 			log.Printf("")
 			log.Printf("%s (Notification)", color.GreenString(not.Method))
 			log.Printf("")
-			log.Printf(not.Doc)
+			log.Printf("%s", not.Doc)
 			log.Printf("")
 			logFields("Parameters", not.Params.Fields)
 			log.Printf("")
@@ -405,7 +405,7 @@ func doMain() error {
 			log.Printf("")
 			log.Printf("%s (Struct)", color.GreenString(t.Name))
 			log.Printf("")
-			log.Printf(t.Doc)
+			log.Printf("%s", t.Doc)
 			log.Printf("")
 			logFields("Fields", t.Fields)
 			log.Printf("")
@@ -416,7 +416,7 @@ func doMain() error {
 			log.Printf("")
 			log.Printf("%s (Enum)", color.GreenString(t.Name))
 			log.Printf("")
-			log.Printf(t.Doc)
+			log.Printf("%s", t.Doc)
 			log.Printf("")
 			logEnumValues("Values", t.Values)
 			log.Printf("")
@@ -969,8 +969,6 @@ func doMain() error {
 			l.Refresh()
 		}
 	}
-
-	return nil
 }
 
 func must(err error) {
