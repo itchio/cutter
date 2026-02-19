@@ -28,10 +28,10 @@ import (
 	"github.com/fatih/color"
 	"github.com/itchio/butler/butlerd/generous/spec"
 
+	"github.com/alecthomas/kingpin/v2"
 	"github.com/chzyer/readline"
 	"github.com/go-errors/errors"
 	prettyjson "github.com/hokaccha/go-prettyjson"
-	"github.com/alecthomas/kingpin/v2"
 )
 
 var debug bool
@@ -39,6 +39,7 @@ var butlerPath string
 var snip = true
 var verbose bool
 var logSql bool
+var raw bool
 var profileID int64
 var cliDbPath string
 var execSingle string
@@ -56,6 +57,7 @@ func main() {
 	app.Flag("profile", "Profile ID to add to requests that need one").Short('p').Default("0").Int64Var(&profileID)
 	app.Flag("exec", "Execute a single command and quit").Short('e').StringVar(&execSingle)
 	app.Flag("sql", "Log SQL queries from hades").BoolVar(&logSql)
+	app.Flag("raw", "Show raw JSON-RPC messages without formatting").BoolVar(&raw)
 
 	log.SetFlags(0)
 	log.SetOutput(color.Output)
@@ -230,6 +232,7 @@ func doMain() error {
 	addrChan := make(chan string)
 	go func() {
 		s := bufio.NewScanner(pr)
+		s.Buffer(make([]byte, 1024*1024), 1024*1024)
 		for s.Scan() {
 			line := s.Bytes()
 
@@ -307,11 +310,10 @@ func doMain() error {
 		l.SetPrompt(pendingPrompt)
 		l.Refresh()
 	}
-	getRequest := func(m map[string]interface{}) string {
+	getRequest := func(reqId int64) string {
 		pendingMutex.Lock()
 		defer pendingMutex.Unlock()
 
-		reqId := int64(m["id"].(float64))
 		pr := pendingReqs[reqId]
 		delete(pendingReqs, reqId)
 
@@ -467,130 +469,170 @@ func doMain() error {
 	var lastStack = ""
 	var lastData map[string]interface{}
 	go func() {
-		s := bufio.NewScanner(conn)
-		connBuffSize := 16 * 1024 * 1024 // 16MiB
-		s.Buffer(make([]byte, connBuffSize), connBuffSize)
-		for s.Scan() {
-			line := s.Bytes()
+		r := bufio.NewReader(conn)
+		prettyResult := func(result interface{}) string {
+			resultString := pretty(result)
+			if !snip {
+				return resultString
+			}
+
+			resultLines := strings.Split(resultString, "\n")
+			if len(resultLines) > 60 {
+				temp := append(resultLines[0:30], color.YellowString("..................... snip ....................."))
+				temp = append(temp, resultLines[len(resultLines)-30:]...)
+				resultLines = temp
+			}
+			return strings.Join(resultLines, "\n")
+		}
+
+		for {
+			line, err := r.ReadBytes('\n')
+			if err != nil {
+				if err == io.EOF && len(line) == 0 {
+					break
+				}
+				if _, ok := err.(net.Error); ok && err != io.EOF {
+					log.Printf("network error: %s", err.Error())
+					if strings.Contains(err.Error(), "use of closed") {
+						return
+					}
+				}
+				if err != io.EOF {
+					must(err)
+				}
+			}
+			line = bytes.TrimRight(line, "\n")
+			if len(line) == 0 {
+				if err == io.EOF {
+					break
+				}
+				continue
+			}
 
 			hang()
 
-			prettyLine, err := f.Format(line)
-			must(err)
+			m := make(map[string]interface{})
+			must(json.Unmarshal(line, &m))
 
-			if verbose {
+			if raw {
+				if execSingle == "" {
+					log.Printf("%s", string(line))
+				}
+			} else if verbose {
+				prettyLine, err := f.Format(line)
+				must(err)
 				log.Printf("← %s", string(prettyLine))
 			}
 
-			prettyResult := func(result interface{}) string {
-				resultString := pretty(result)
-				if !snip {
-					return resultString
+			_, hasError := m["error"]
+			_, hasResult := m["result"]
+			responseMethod := ""
+			if id, ok := m["id"].(float64); ok && (hasResult || hasError) {
+				reqID := int64(id)
+				if ch, ok := getResponseChan(reqID); ok {
+					ch <- m
 				}
-
-				resultLines := strings.Split(resultString, "\n")
-				if len(resultLines) > 60 {
-					temp := append(resultLines[0:30], color.YellowString("..................... snip ....................."))
-					temp = append(temp, resultLines[len(resultLines)-30:]...)
-					resultLines = temp
-				}
-				return strings.Join(resultLines, "\n")
+				responseMethod = getRequest(reqID)
 			}
 
-			{
-				m := make(map[string]interface{})
-				must(json.Unmarshal(line, &m))
+			if responseMethod == "" && (hasResult || hasError) {
+				responseMethod = "<Unknown request>"
+			}
 
-				if _, ok := m["error"]; ok {
-					if e, ok := m["error"].(map[string]interface{}); ok {
-						reqId := int64(m["id"].(float64))
-						if ch, ok := getResponseChan(reqId); ok {
-							ch <- m
-						}
-						method := getRequest(m)
-						log.Printf("⚠ %s (Code %d):", color.GreenString(method), int64(e["code"].(float64)))
-						log.Printf("    %s", color.RedString(e["message"].(string)))
-						if hasDoc(method) {
-							log.Printf("(Use the 'doc' command to learn more about %s)", color.GreenString(method))
-						}
-						if data, ok := e["data"].(map[string]interface{}); ok {
-							lastData = data
-							lastStack = data["stack"].(string)
-							log.Printf("(Use the 'st' command to see a full stack trace)")
+			if hasError {
+				if e, ok := m["error"].(map[string]interface{}); ok {
+					if data, ok := e["data"].(map[string]interface{}); ok {
+						lastData = data
+						if stack, ok := data["stack"].(string); ok {
+							lastStack = stack
 						} else {
 							lastStack = ""
 						}
-						singleCancel()
 					} else {
-						log.Printf("\n Error we can't unwrap: %s\n", pretty(m))
+						lastStack = ""
 					}
-				} else if _, ok := m["result"]; ok {
-					// reply to one or our requests
-					reqId := int64(m["id"].(float64))
-					if ch, ok := getResponseChan(reqId); ok {
-						ch <- m
-					}
-					method := getRequest(m)
-					if method != "Meta.Authenticate" {
+
+					if raw {
 						if execSingle != "" {
+							fmt.Fprintf(os.Stdout, "%s", string(line))
+						}
+					} else {
+						log.Printf("⚠ %s (Code %d):", color.GreenString(responseMethod), int64(e["code"].(float64)))
+						log.Printf("    %s", color.RedString(e["message"].(string)))
+						if hasDoc(responseMethod) {
+							log.Printf("(Use the 'doc' command to learn more about %s)", color.GreenString(responseMethod))
+						}
+						if lastStack != "" {
+							log.Printf("(Use the 'st' command to see a full stack trace)")
+						}
+					}
+					singleCancel()
+				} else {
+					log.Printf("\n Error we can't unwrap: %s\n", pretty(m))
+				}
+			} else if hasResult {
+				// reply to one or our requests
+				if responseMethod != "Meta.Authenticate" {
+					if execSingle != "" {
+						if raw {
+							fmt.Fprintf(os.Stdout, "%s", string(line))
+						} else {
 							jsonBytes, err := json.MarshalIndent(m["result"], "", "  ")
 							if err != nil {
 								panic(err)
 							}
 							fmt.Fprintf(os.Stdout, "%s", string(jsonBytes))
-							singleCancel()
-						} else {
-							log.Printf("← %s: %s\n", color.GreenString(method), prettyResult(m["result"]))
 						}
+						singleCancel()
+					} else if !raw {
+						log.Printf("← %s: %s\n", color.GreenString(responseMethod), prettyResult(m["result"]))
 					}
-				} else if _, ok := m["id"]; ok {
-					// server request
-					method := m["method"].(string)
+				}
+			} else if _, ok := m["id"]; ok {
+				// server request
+				method := m["method"].(string)
 
-					lastMethod = method
+				lastMethod = method
+				if !raw {
 					log.Printf("→ %s: %s\n", color.GreenString(method), pretty(m["params"]))
 					log.Printf("(Reply to this server request with '%.0f [json payload]')", m["id"])
 					if hasDoc(method) {
 						log.Printf("(Use the 'doc' command to learn more about %s)", color.GreenString(method))
 					}
-				} else if _, ok := m["params"]; ok {
-					// notification
-					method := m["method"].(string)
+				}
+			} else if _, ok := m["params"]; ok {
+				// notification
+				method := m["method"].(string)
 
-					if method == "Log" {
-						if p, ok := m["params"].(map[string]interface{}); ok {
-							if p["level"] != "debug" || debug {
-								log.Printf("✉ %s %s\n", p["level"], p["message"])
-							}
+				if method == "Log" {
+					if p, ok := m["params"].(map[string]interface{}); ok {
+						if (p["level"] != "debug" || debug) && !raw {
+							log.Printf("✉ %s %s\n", p["level"], p["message"])
 						}
-					} else {
-						if execSingle != "" {
+					}
+				} else {
+					if execSingle != "" {
+						if raw {
+							fmt.Fprintf(os.Stdout, "%s", string(line))
+						} else {
 							jsonBytes, err := json.MarshalIndent(m["params"], "", "  ")
 							if err != nil {
 								panic(err)
 							}
 							fmt.Fprintf(os.Stdout, "%s", string(jsonBytes))
-							singleCancel()
-						} else {
-							log.Printf("✉ %s %s\n", color.GreenString(method), prettyResult(m["params"]))
 						}
+						singleCancel()
+					} else if !raw {
+						log.Printf("✉ %s %s\n", color.GreenString(method), prettyResult(m["params"]))
 					}
-				} else {
-					log.Printf(" Not sure what: %s\n", pretty(m))
 				}
+			} else if !raw {
+				log.Printf(" Not sure what: %s\n", pretty(m))
 			}
 			l.Refresh()
-		}
-		err := s.Err()
-		if err != nil {
-			if _, ok := err.(net.Error); ok {
-				log.Printf("network error: %s", err.Error())
-				if strings.Contains(err.Error(), "use of closed") {
-					// that's ok
-					return
-				}
+			if err == io.EOF {
+				break
 			}
-			must(err)
 		}
 		must(errors.New("connection closed"))
 	}()
@@ -925,12 +967,15 @@ func doMain() error {
 		}
 
 		if verbose {
-			prettyInput, err := f.Format(reqBytes)
-			if err != nil {
-				return errors.WrapPrefix(err, "while pretty-printing request", 0)
+			if raw {
+				log.Printf("\n→ %s\n", string(reqBytes))
+			} else {
+				prettyInput, err := f.Format(reqBytes)
+				if err != nil {
+					return errors.WrapPrefix(err, "while pretty-printing request", 0)
+				}
+				log.Printf("\n→ %s\n", string(prettyInput))
 			}
-
-			log.Printf("\n→ %s\n", string(prettyInput))
 		}
 
 		_, err = conn.Write(reqBytes)
