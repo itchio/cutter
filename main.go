@@ -49,8 +49,8 @@ var ErrCycle = errors.New("cycle")
 func main() {
 	app := kingpin.New("cutter", "A CLI for butlerd (the butler daemon)")
 	app.Arg("butler-path", "Path to butler repository").Required().StringVar(&butlerPath)
-	app.Flag("verbose", "Show full input & output").BoolVar(&verbose)
-	app.Flag("debug", "Show full input & output").BoolVar(&debug)
+	app.Flag("verbose", "Show JSON-RPC traffic and butler log lines").BoolVar(&verbose)
+	app.Flag("debug", "Show debug-level log notifications from butlerd").BoolVar(&debug)
 	app.Flag("dbpath", "Explicit path for database").StringVar(&cliDbPath)
 	app.Flag("appname", "Application to open the database for").Default("kitch").StringVar(&appName)
 	app.Flag("profile", "Profile ID to add to requests that need one").Short('p').Default("0").Int64Var(&profileID)
@@ -520,14 +520,14 @@ func doMain() error {
 	}
 
 	renderMessage := func(kind msgKind, line []byte, m map[string]interface{}, responseMethod string) {
-		if raw {
-			if execSingle == "" {
-				renderLogf("%s", string(line))
+		if verbose {
+			if raw {
+				renderLogf("← %s", string(line))
+			} else {
+				prettyLine, err := f.Format(line)
+				must(err)
+				renderLogf("← %s", string(prettyLine))
 			}
-		} else if verbose {
-			prettyLine, err := f.Format(line)
-			must(err)
-			renderLogf("← %s", string(prettyLine))
 		}
 
 		switch kind {
@@ -549,10 +549,10 @@ func doMain() error {
 				lastStack = ""
 			}
 
-			if raw {
-				if execSingle != "" {
-					fmt.Fprintf(os.Stdout, "%s", string(line))
-				}
+			if execSingle != "" {
+				writeExecOutput(m["error"], line)
+			} else if raw {
+				renderLogf("%s", string(line))
 			} else {
 				renderLogf("⚠ %s (Code %d):", color.GreenString(responseMethod), int64(e["code"].(float64)))
 				renderLogf("    %s", color.RedString(e["message"].(string)))
@@ -565,14 +565,16 @@ func doMain() error {
 			}
 			singleCancel()
 		case msgResultResponse:
-			// reply to one or our requests
+			// reply to one of our requests
 			if responseMethod == "Meta.Authenticate" {
 				return
 			}
 
 			if execSingle != "" {
 				writeExecOutput(m["result"], line)
-			} else if !raw {
+			} else if raw {
+				renderLogf("%s", string(line))
+			} else {
 				renderLogf("← %s: %s\n", color.GreenString(responseMethod), prettyResult(m["result"]))
 			}
 		case msgServerRequest:
@@ -580,7 +582,9 @@ func doMain() error {
 			method := m["method"].(string)
 
 			lastMethod = method
-			if !raw {
+			if raw {
+				renderLogf("%s", string(line))
+			} else {
 				renderLogf("→ %s: %s\n", color.GreenString(method), pretty(m["params"]))
 				renderLogf("(Reply to this server request with '%.0f [json payload]')", m["id"])
 				if hasDoc(method) {
@@ -592,8 +596,12 @@ func doMain() error {
 			method := m["method"].(string)
 			if method == "Log" {
 				if p, ok := m["params"].(map[string]interface{}); ok {
-					if (p["level"] != "debug" || debug) && !raw {
-						renderLogf("✉ %s %s\n", p["level"], p["message"])
+					if p["level"] != "debug" || debug {
+						if raw {
+							renderLogf("%s", string(line))
+						} else {
+							renderLogf("✉ %s %s\n", p["level"], p["message"])
+						}
 					}
 				}
 				return
@@ -601,11 +609,15 @@ func doMain() error {
 
 			if execSingle != "" {
 				writeExecOutput(m["params"], line)
-			} else if !raw {
+			} else if raw {
+				renderLogf("%s", string(line))
+			} else {
 				renderLogf("✉ %s %s\n", color.GreenString(method), prettyResult(m["params"]))
 			}
 		case msgUnknown:
-			if !raw {
+			if raw {
+				renderLogf("%s", string(line))
+			} else {
 				renderLogf(" Not sure what: %s\n", pretty(m))
 			}
 		}
