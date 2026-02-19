@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
@@ -21,8 +22,6 @@ import (
 	"strings"
 	"sync"
 	"time"
-
-	"bytes"
 
 	"github.com/alecthomas/chroma/v2/quick"
 	"github.com/fatih/color"
@@ -176,6 +175,33 @@ func doMain() error {
 
 	f := prettyjson.NewFormatter()
 
+	type mergedLine struct {
+		line []byte
+		err  error
+	}
+	mergedLines := make(chan mergedLine, 16*1024)
+	pushMergedLine := func(line []byte) {
+		copied := append([]byte(nil), line...)
+		mergedLines <- mergedLine{line: copied}
+	}
+	pushMergedErr := func(err error) {
+		mergedLines <- mergedLine{err: err}
+	}
+
+	renderLogf := func(format string, args ...interface{}) {
+		hang()
+		log.Printf(format, args...)
+		l.Refresh()
+	}
+
+	type bootstrapInfo struct {
+		secret string
+		addr   string
+	}
+	bootstrapChan := make(chan bootstrapInfo, 1)
+
+	var readWg sync.WaitGroup
+
 	dbPath := cliDbPath
 
 	if dbPath == "" {
@@ -220,78 +246,30 @@ func doMain() error {
 
 	go func() {
 		must(cmd.Start())
+		must(pw.Close())
 		defer cmd.Process.Kill()
 		err := cmd.Wait()
 		if err != nil {
-			log.Printf("butler exited with error: %s", err.Error())
+			renderLogf("butler exited with error: %s", err.Error())
 		}
 	}()
 
-	var secret string
-
-	addrChan := make(chan string)
+	readWg.Add(1)
 	go func() {
+		defer readWg.Done()
 		s := bufio.NewScanner(pr)
 		s.Buffer(make([]byte, 1024*1024), 1024*1024)
 		for s.Scan() {
-			line := s.Bytes()
-
-			m := make(map[string]interface{})
-			err := json.Unmarshal(line, &m)
-			if err != nil {
-				if verbose {
-					log.Printf("[butler]: %s", string(line))
-				}
-				continue
-			}
-
-			switch m["type"] {
-			case "butlerd/listen-notification":
-				secret = m["secret"].(string)
-				tcpBlock := m["tcp"].(map[string]interface{})
-				addrChan <- tcpBlock["address"].(string)
-			case "log":
-				if logSql && m["message"] == "hades query" {
-					query, _ := m["query"].(string)
-					if query != "" {
-						var duration string
-						if d, ok := m["duration"].(float64); ok {
-							duration = time.Duration(int64(d)).String()
-						}
-						args, _ := m["args"].([]interface{})
-						var buf bytes.Buffer
-						highlighted := query
-						if err := quick.Highlight(&buf, query, "sql", "terminal256", "monokai"); err == nil {
-							highlighted = strings.TrimSpace(buf.String())
-						}
-						if len(args) > 0 {
-							log.Printf("[sql] [%s] %s %v", duration, highlighted, args)
-						} else {
-							log.Printf("[sql] [%s] %s", duration, highlighted)
-						}
-					}
-				} else if verbose {
-					log.Printf("[butler]: %s", string(line))
-				}
-			default:
-				if verbose {
-					log.Printf("[butler]: %s", string(line))
-				}
-			}
+			pushMergedLine(s.Bytes())
 		}
-		must(s.Err())
+		if err := s.Err(); err != nil {
+			pushMergedErr(err)
+		}
 	}()
 
-	addr := <-addrChan
-	if verbose {
-		log.Printf("Connecting to %s...", addr)
-	}
-
-	conn, err := net.Dial("tcp", addr)
-	if err != nil {
-		return errors.Wrap(err, 0)
-	}
-	defer conn.Close()
+	// conn and secret are set after bootstrap (see below)
+	var conn net.Conn
+	var secret string
 
 	pretty := func(input interface{}) string {
 		out, err := f.Marshal(input)
@@ -494,27 +472,6 @@ func doMain() error {
 		return strings.Join(resultLines, "\n")
 	}
 
-	readFrame := func(r *bufio.Reader) ([]byte, bool, error) {
-		line, err := r.ReadBytes('\n')
-		if err != nil && err != io.EOF {
-			if _, ok := err.(net.Error); ok {
-				log.Printf("network error: %s", err.Error())
-				if strings.Contains(err.Error(), "use of closed") {
-					return nil, true, nil
-				}
-			}
-			return nil, false, err
-		}
-
-		line = bytes.TrimRight(line, "\n")
-		eof := err == io.EOF
-		if len(line) == 0 && eof {
-			return nil, true, nil
-		}
-
-		return line, eof, nil
-	}
-
 	classifyMessage := func(m map[string]interface{}) msgKind {
 		if _, ok := m["error"]; ok {
 			return msgErrorResponse
@@ -565,19 +522,19 @@ func doMain() error {
 	renderMessage := func(kind msgKind, line []byte, m map[string]interface{}, responseMethod string) {
 		if raw {
 			if execSingle == "" {
-				log.Printf("%s", string(line))
+				renderLogf("%s", string(line))
 			}
 		} else if verbose {
 			prettyLine, err := f.Format(line)
 			must(err)
-			log.Printf("← %s", string(prettyLine))
+			renderLogf("← %s", string(prettyLine))
 		}
 
 		switch kind {
 		case msgErrorResponse:
 			e, ok := m["error"].(map[string]interface{})
 			if !ok {
-				log.Printf("\n Error we can't unwrap: %s\n", pretty(m))
+				renderLogf("\n Error we can't unwrap: %s\n", pretty(m))
 				return
 			}
 
@@ -597,13 +554,13 @@ func doMain() error {
 					fmt.Fprintf(os.Stdout, "%s", string(line))
 				}
 			} else {
-				log.Printf("⚠ %s (Code %d):", color.GreenString(responseMethod), int64(e["code"].(float64)))
-				log.Printf("    %s", color.RedString(e["message"].(string)))
+				renderLogf("⚠ %s (Code %d):", color.GreenString(responseMethod), int64(e["code"].(float64)))
+				renderLogf("    %s", color.RedString(e["message"].(string)))
 				if hasDoc(responseMethod) {
-					log.Printf("(Use the 'doc' command to learn more about %s)", color.GreenString(responseMethod))
+					renderLogf("(Use the 'doc' command to learn more about %s)", color.GreenString(responseMethod))
 				}
 				if lastStack != "" {
-					log.Printf("(Use the 'st' command to see a full stack trace)")
+					renderLogf("(Use the 'st' command to see a full stack trace)")
 				}
 			}
 			singleCancel()
@@ -616,7 +573,7 @@ func doMain() error {
 			if execSingle != "" {
 				writeExecOutput(m["result"], line)
 			} else if !raw {
-				log.Printf("← %s: %s\n", color.GreenString(responseMethod), prettyResult(m["result"]))
+				renderLogf("← %s: %s\n", color.GreenString(responseMethod), prettyResult(m["result"]))
 			}
 		case msgServerRequest:
 			// server request
@@ -624,10 +581,10 @@ func doMain() error {
 
 			lastMethod = method
 			if !raw {
-				log.Printf("→ %s: %s\n", color.GreenString(method), pretty(m["params"]))
-				log.Printf("(Reply to this server request with '%.0f [json payload]')", m["id"])
+				renderLogf("→ %s: %s\n", color.GreenString(method), pretty(m["params"]))
+				renderLogf("(Reply to this server request with '%.0f [json payload]')", m["id"])
 				if hasDoc(method) {
-					log.Printf("(Use the 'doc' command to learn more about %s)", color.GreenString(method))
+					renderLogf("(Use the 'doc' command to learn more about %s)", color.GreenString(method))
 				}
 			}
 		case msgNotification:
@@ -636,7 +593,7 @@ func doMain() error {
 			if method == "Log" {
 				if p, ok := m["params"].(map[string]interface{}); ok {
 					if (p["level"] != "debug" || debug) && !raw {
-						log.Printf("✉ %s %s\n", p["level"], p["message"])
+						renderLogf("✉ %s %s\n", p["level"], p["message"])
 					}
 				}
 				return
@@ -645,45 +602,108 @@ func doMain() error {
 			if execSingle != "" {
 				writeExecOutput(m["params"], line)
 			} else if !raw {
-				log.Printf("✉ %s %s\n", color.GreenString(method), prettyResult(m["params"]))
+				renderLogf("✉ %s %s\n", color.GreenString(method), prettyResult(m["params"]))
 			}
 		case msgUnknown:
 			if !raw {
-				log.Printf(" Not sure what: %s\n", pretty(m))
+				renderLogf(" Not sure what: %s\n", pretty(m))
 			}
 		}
 	}
 
 	go func() {
-		r := bufio.NewReader(conn)
-		for {
-			line, eof, err := readFrame(r)
-			if err != nil {
-				must(err)
+		bootstrapped := false
+		for item := range mergedLines {
+			if item.err != nil {
+				must(item.err)
 			}
 
+			line := item.line
 			if len(line) == 0 {
-				if eof {
-					break
+				continue
+			}
+
+			m := make(map[string]interface{})
+			if err := json.Unmarshal(line, &m); err != nil {
+				if verbose {
+					renderLogf("[butler]: %s", string(line))
 				}
 				continue
 			}
 
-			hang()
-
-			m := make(map[string]interface{})
-			must(json.Unmarshal(line, &m))
+			if msgType, ok := m["type"].(string); ok {
+				switch msgType {
+				case "butlerd/listen-notification":
+					if !bootstrapped {
+						secretValue, addr, ok := parseListenNotification(m)
+						if ok {
+							bootstrapped = true
+							bootstrapChan <- bootstrapInfo{secret: secretValue, addr: addr}
+						}
+					}
+					continue
+				case "log":
+					if logSql && m["message"] == "hades query" {
+						if logLine, ok := formatSQLLogLine(m); ok {
+							renderLogf("%s", logLine)
+						}
+						continue
+					}
+				}
+				if verbose {
+					renderLogf("[butler]: %s", string(line))
+				}
+				continue
+			}
 
 			kind := classifyMessage(m)
 			responseMethod := handleResponseSideEffects(kind, m)
 			renderMessage(kind, line, m, responseMethod)
+		}
+	}()
 
-			l.Refresh()
-			if eof {
-				break
+	boot := <-bootstrapChan
+	secret = boot.secret
+	addr := boot.addr
+	if verbose {
+		log.Printf("Connecting to %s...", addr)
+	}
+
+	conn, err = net.Dial("tcp", addr)
+	if err != nil {
+		return errors.Wrap(err, 0)
+	}
+	defer conn.Close()
+
+	readWg.Add(1)
+	go func() {
+		defer readWg.Done()
+		r := bufio.NewReader(conn)
+		for {
+			line, err := r.ReadBytes('\n')
+			if err != nil && err != io.EOF {
+				if strings.Contains(err.Error(), "use of closed") {
+					return
+				}
+				pushMergedErr(err)
+				return
+			}
+
+			line = bytes.TrimRight(line, "\n")
+			if len(line) > 0 {
+				pushMergedLine(line)
+			}
+
+			if err == io.EOF {
+				pushMergedErr(errors.New("connection closed"))
+				return
 			}
 		}
-		must(errors.New("connection closed"))
+	}()
+
+	go func() {
+		readWg.Wait()
+		close(mergedLines)
 	}()
 
 	var id int64
@@ -1112,6 +1132,51 @@ func must(err error) {
 	} else {
 		log.Fatal(err.Error())
 	}
+}
+
+func parseListenNotification(m map[string]interface{}) (secret string, addr string, ok bool) {
+	secret, ok = m["secret"].(string)
+	if !ok || secret == "" {
+		return "", "", false
+	}
+
+	tcpBlock, ok := m["tcp"].(map[string]interface{})
+	if !ok {
+		return "", "", false
+	}
+
+	addr, ok = tcpBlock["address"].(string)
+	if !ok || addr == "" {
+		return "", "", false
+	}
+
+	return secret, addr, true
+}
+
+func formatSQLLogLine(m map[string]interface{}) (string, bool) {
+	query, _ := m["query"].(string)
+	if query == "" {
+		return "", false
+	}
+
+	duration := ""
+	if d, ok := m["duration"].(float64); ok {
+		duration = time.Duration(int64(d)).String()
+	}
+
+	args, _ := m["args"].([]interface{})
+
+	var buf bytes.Buffer
+	highlighted := query
+	if err := quick.Highlight(&buf, query, "sql", "terminal256", "monokai"); err == nil {
+		highlighted = strings.TrimSpace(buf.String())
+	}
+
+	if len(args) > 0 {
+		return fmt.Sprintf("[sql] [%s] %s %v", duration, highlighted, args), true
+	}
+
+	return fmt.Sprintf("[sql] [%s] %s", duration, highlighted), true
 }
 
 func rebuild() {
