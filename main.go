@@ -38,6 +38,7 @@ var butlerPath string
 var snip = true
 var verbose bool
 var logSql bool
+var logHttp bool
 var raw bool
 var profileID int64
 var cliDbPath string
@@ -55,7 +56,8 @@ func main() {
 	app.Flag("appname", "Application to open the database for").Default("kitch").StringVar(&appName)
 	app.Flag("profile", "Profile ID to add to requests that need one").Short('p').Default("0").Int64Var(&profileID)
 	app.Flag("exec", "Execute a single command and quit").Short('e').StringVar(&execSingle)
-	app.Flag("sql", "Log SQL queries from hades").BoolVar(&logSql)
+	app.Flag("log-sql", "Log SQL queries from hades").BoolVar(&logSql)
+	app.Flag("log-http", "Log HTTP requests from go-itchio").BoolVar(&logHttp)
 	app.Flag("raw", "Show raw JSON-RPC messages without formatting").BoolVar(&raw)
 
 	log.SetFlags(0)
@@ -224,8 +226,14 @@ func doMain() error {
 		"--dbpath", dbPath,
 	)
 
-	if logSql {
-		cmd.Env = append(os.Environ(), "BUTLER_SQL_DEBUG=1")
+	if logSql || logHttp {
+		cmd.Env = os.Environ()
+		if logSql {
+			cmd.Env = append(cmd.Env, "BUTLER_SQL_DEBUG=1")
+		}
+		if logHttp {
+			cmd.Env = append(cmd.Env, "BUTLER_HTTP_DEBUG=1")
+		}
 	}
 
 	if verbose {
@@ -657,6 +665,12 @@ func doMain() error {
 				case "log":
 					if logSql && m["message"] == "hades query" {
 						if logLine, ok := formatSQLLogLine(m); ok {
+							renderLogf("%s", logLine)
+						}
+						continue
+					}
+					if logHttp && m["message"] == "http request" {
+						if logLine, ok := formatHTTPLogLine(m); ok {
 							renderLogf("%s", logLine)
 						}
 						continue
@@ -1189,6 +1203,37 @@ func formatSQLLogLine(m map[string]interface{}) (string, bool) {
 	}
 
 	return fmt.Sprintf("[sql] [%s] %s", duration, highlighted), true
+}
+
+func formatHTTPLogLine(m map[string]interface{}) (string, bool) {
+	method, _ := m["method"].(string)
+	url, _ := m["url"].(string)
+	if method == "" || url == "" {
+		return "", false
+	}
+
+	statusCode := 0
+	if sc, ok := m["status_code"].(float64); ok {
+		statusCode = int(sc)
+	}
+
+	duration := ""
+	if d, ok := m["duration_ms"].(float64); ok {
+		duration = fmt.Sprintf("%dms", int64(d))
+	}
+
+	result := fmt.Sprintf("[http] [%s] %s %d %s", duration, method, statusCode, url)
+
+	if retrying, ok := m["retrying"].(bool); ok && retrying {
+		reason, _ := m["retry_reason"].(string)
+		result += fmt.Sprintf(" (retrying: %s)", reason)
+	}
+
+	if errMsg, ok := m["error"].(string); ok && errMsg != "" {
+		result += fmt.Sprintf(" error: %s", errMsg)
+	}
+
+	return result, true
 }
 
 func rebuild() {
