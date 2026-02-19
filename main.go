@@ -22,6 +22,9 @@ import (
 	"sync"
 	"time"
 
+	"bytes"
+
+	"github.com/alecthomas/chroma/v2/quick"
 	"github.com/fatih/color"
 	"github.com/itchio/butler/butlerd/generous/spec"
 
@@ -35,6 +38,7 @@ var debug bool
 var butlerPath string
 var snip = true
 var verbose bool
+var logSql bool
 var profileID int64
 var cliDbPath string
 var execSingle string
@@ -51,6 +55,7 @@ func main() {
 	app.Flag("appname", "Application to open the database for").Default("kitch").StringVar(&appName)
 	app.Flag("profile", "Profile ID to add to requests that need one").Short('p').Default("0").Int64Var(&profileID)
 	app.Flag("exec", "Execute a single command and quit").Short('e').StringVar(&execSingle)
+	app.Flag("sql", "Log SQL queries from hades").BoolVar(&logSql)
 
 	log.SetFlags(0)
 	log.SetOutput(color.Output)
@@ -191,11 +196,20 @@ func doMain() error {
 		"--dbpath", dbPath,
 	)
 
+	if logSql {
+		cmd.Env = append(os.Environ(), "BUTLER_SQL_DEBUG=1")
+	}
+
+	if verbose {
+		log.Printf("Running: %s", strings.Join(cmd.Args, " "))
+	}
+
 	pr, pw, err := os.Pipe()
 	if err != nil {
 		return errors.Wrap(err, 0)
 	}
 	cmd.Stdout = pw
+
 	if execSingle == "" {
 		cmd.Stderr = l.Stderr()
 	} else {
@@ -233,6 +247,29 @@ func doMain() error {
 				secret = m["secret"].(string)
 				tcpBlock := m["tcp"].(map[string]interface{})
 				addrChan <- tcpBlock["address"].(string)
+			case "log":
+				if logSql && m["message"] == "hades query" {
+					query, _ := m["query"].(string)
+					if query != "" {
+						var duration string
+						if d, ok := m["duration"].(float64); ok {
+							duration = time.Duration(int64(d)).String()
+						}
+						args, _ := m["args"].([]interface{})
+						var buf bytes.Buffer
+						highlighted := query
+						if err := quick.Highlight(&buf, query, "sql", "terminal256", "monokai"); err == nil {
+							highlighted = strings.TrimSpace(buf.String())
+						}
+						if len(args) > 0 {
+							log.Printf("[sql] [%s] %s %v", duration, highlighted, args)
+						} else {
+							log.Printf("[sql] [%s] %s", duration, highlighted)
+						}
+					}
+				} else if verbose {
+					log.Printf("[butler]: %s", string(line))
+				}
 			default:
 				if verbose {
 					log.Printf("[butler]: %s", string(line))
@@ -335,7 +372,7 @@ func doMain() error {
 		log.Printf("%s: ", color.YellowString(name))
 		log.Printf("")
 		for _, field := range fields {
-			log.Printf("  - %s: %s", color.RedString(field.Name), color.BlueString(field.Value))
+			log.Printf("  - %s: %v", color.RedString(field.Name), color.BlueString(fmt.Sprintf("%v", field.Value)))
 			log.Printf("    %s", field.Doc)
 		}
 	}
