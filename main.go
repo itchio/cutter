@@ -468,42 +468,202 @@ func doMain() error {
 	var lastMethod = ""
 	var lastStack = ""
 	var lastData map[string]interface{}
-	go func() {
-		r := bufio.NewReader(conn)
-		prettyResult := func(result interface{}) string {
-			resultString := pretty(result)
-			if !snip {
-				return resultString
-			}
 
-			resultLines := strings.Split(resultString, "\n")
-			if len(resultLines) > 60 {
-				temp := append(resultLines[0:30], color.YellowString("..................... snip ....................."))
-				temp = append(temp, resultLines[len(resultLines)-30:]...)
-				resultLines = temp
-			}
-			return strings.Join(resultLines, "\n")
+	type msgKind int
+
+	const (
+		msgUnknown msgKind = iota
+		msgErrorResponse
+		msgResultResponse
+		msgServerRequest
+		msgNotification
+	)
+
+	prettyResult := func(result interface{}) string {
+		resultString := pretty(result)
+		if !snip {
+			return resultString
 		}
 
-		for {
-			line, err := r.ReadBytes('\n')
-			if err != nil {
-				if err == io.EOF && len(line) == 0 {
-					break
-				}
-				if _, ok := err.(net.Error); ok && err != io.EOF {
-					log.Printf("network error: %s", err.Error())
-					if strings.Contains(err.Error(), "use of closed") {
-						return
-					}
-				}
-				if err != io.EOF {
-					must(err)
+		resultLines := strings.Split(resultString, "\n")
+		if len(resultLines) > 60 {
+			temp := append(resultLines[0:30], color.YellowString("..................... snip ....................."))
+			temp = append(temp, resultLines[len(resultLines)-30:]...)
+			resultLines = temp
+		}
+		return strings.Join(resultLines, "\n")
+	}
+
+	readFrame := func(r *bufio.Reader) ([]byte, bool, error) {
+		line, err := r.ReadBytes('\n')
+		if err != nil && err != io.EOF {
+			if _, ok := err.(net.Error); ok {
+				log.Printf("network error: %s", err.Error())
+				if strings.Contains(err.Error(), "use of closed") {
+					return nil, true, nil
 				}
 			}
-			line = bytes.TrimRight(line, "\n")
+			return nil, false, err
+		}
+
+		line = bytes.TrimRight(line, "\n")
+		eof := err == io.EOF
+		if len(line) == 0 && eof {
+			return nil, true, nil
+		}
+
+		return line, eof, nil
+	}
+
+	classifyMessage := func(m map[string]interface{}) msgKind {
+		if _, ok := m["error"]; ok {
+			return msgErrorResponse
+		}
+		if _, ok := m["result"]; ok {
+			return msgResultResponse
+		}
+		if _, ok := m["id"]; ok {
+			return msgServerRequest
+		}
+		if _, ok := m["params"]; ok {
+			return msgNotification
+		}
+		return msgUnknown
+	}
+
+	handleResponseSideEffects := func(kind msgKind, m map[string]interface{}) string {
+		if kind != msgErrorResponse && kind != msgResultResponse {
+			return ""
+		}
+
+		id, ok := m["id"].(float64)
+		if !ok {
+			return "<Unknown request>"
+		}
+
+		reqID := int64(id)
+		if ch, ok := getResponseChan(reqID); ok {
+			ch <- m
+		}
+
+		return getRequest(reqID)
+	}
+
+	writeExecOutput := func(payload interface{}, line []byte) {
+		if raw {
+			fmt.Fprintf(os.Stdout, "%s", string(line))
+		} else {
+			jsonBytes, err := json.MarshalIndent(payload, "", "  ")
+			if err != nil {
+				panic(err)
+			}
+			fmt.Fprintf(os.Stdout, "%s", string(jsonBytes))
+		}
+		singleCancel()
+	}
+
+	renderMessage := func(kind msgKind, line []byte, m map[string]interface{}, responseMethod string) {
+		if raw {
+			if execSingle == "" {
+				log.Printf("%s", string(line))
+			}
+		} else if verbose {
+			prettyLine, err := f.Format(line)
+			must(err)
+			log.Printf("← %s", string(prettyLine))
+		}
+
+		switch kind {
+		case msgErrorResponse:
+			e, ok := m["error"].(map[string]interface{})
+			if !ok {
+				log.Printf("\n Error we can't unwrap: %s\n", pretty(m))
+				return
+			}
+
+			if data, ok := e["data"].(map[string]interface{}); ok {
+				lastData = data
+				if stack, ok := data["stack"].(string); ok {
+					lastStack = stack
+				} else {
+					lastStack = ""
+				}
+			} else {
+				lastStack = ""
+			}
+
+			if raw {
+				if execSingle != "" {
+					fmt.Fprintf(os.Stdout, "%s", string(line))
+				}
+			} else {
+				log.Printf("⚠ %s (Code %d):", color.GreenString(responseMethod), int64(e["code"].(float64)))
+				log.Printf("    %s", color.RedString(e["message"].(string)))
+				if hasDoc(responseMethod) {
+					log.Printf("(Use the 'doc' command to learn more about %s)", color.GreenString(responseMethod))
+				}
+				if lastStack != "" {
+					log.Printf("(Use the 'st' command to see a full stack trace)")
+				}
+			}
+			singleCancel()
+		case msgResultResponse:
+			// reply to one or our requests
+			if responseMethod == "Meta.Authenticate" {
+				return
+			}
+
+			if execSingle != "" {
+				writeExecOutput(m["result"], line)
+			} else if !raw {
+				log.Printf("← %s: %s\n", color.GreenString(responseMethod), prettyResult(m["result"]))
+			}
+		case msgServerRequest:
+			// server request
+			method := m["method"].(string)
+
+			lastMethod = method
+			if !raw {
+				log.Printf("→ %s: %s\n", color.GreenString(method), pretty(m["params"]))
+				log.Printf("(Reply to this server request with '%.0f [json payload]')", m["id"])
+				if hasDoc(method) {
+					log.Printf("(Use the 'doc' command to learn more about %s)", color.GreenString(method))
+				}
+			}
+		case msgNotification:
+			// notification
+			method := m["method"].(string)
+			if method == "Log" {
+				if p, ok := m["params"].(map[string]interface{}); ok {
+					if (p["level"] != "debug" || debug) && !raw {
+						log.Printf("✉ %s %s\n", p["level"], p["message"])
+					}
+				}
+				return
+			}
+
+			if execSingle != "" {
+				writeExecOutput(m["params"], line)
+			} else if !raw {
+				log.Printf("✉ %s %s\n", color.GreenString(method), prettyResult(m["params"]))
+			}
+		case msgUnknown:
+			if !raw {
+				log.Printf(" Not sure what: %s\n", pretty(m))
+			}
+		}
+	}
+
+	go func() {
+		r := bufio.NewReader(conn)
+		for {
+			line, eof, err := readFrame(r)
+			if err != nil {
+				must(err)
+			}
+
 			if len(line) == 0 {
-				if err == io.EOF {
+				if eof {
 					break
 				}
 				continue
@@ -514,123 +674,12 @@ func doMain() error {
 			m := make(map[string]interface{})
 			must(json.Unmarshal(line, &m))
 
-			if raw {
-				if execSingle == "" {
-					log.Printf("%s", string(line))
-				}
-			} else if verbose {
-				prettyLine, err := f.Format(line)
-				must(err)
-				log.Printf("← %s", string(prettyLine))
-			}
+			kind := classifyMessage(m)
+			responseMethod := handleResponseSideEffects(kind, m)
+			renderMessage(kind, line, m, responseMethod)
 
-			_, hasError := m["error"]
-			_, hasResult := m["result"]
-			responseMethod := ""
-			if id, ok := m["id"].(float64); ok && (hasResult || hasError) {
-				reqID := int64(id)
-				if ch, ok := getResponseChan(reqID); ok {
-					ch <- m
-				}
-				responseMethod = getRequest(reqID)
-			}
-
-			if responseMethod == "" && (hasResult || hasError) {
-				responseMethod = "<Unknown request>"
-			}
-
-			if hasError {
-				if e, ok := m["error"].(map[string]interface{}); ok {
-					if data, ok := e["data"].(map[string]interface{}); ok {
-						lastData = data
-						if stack, ok := data["stack"].(string); ok {
-							lastStack = stack
-						} else {
-							lastStack = ""
-						}
-					} else {
-						lastStack = ""
-					}
-
-					if raw {
-						if execSingle != "" {
-							fmt.Fprintf(os.Stdout, "%s", string(line))
-						}
-					} else {
-						log.Printf("⚠ %s (Code %d):", color.GreenString(responseMethod), int64(e["code"].(float64)))
-						log.Printf("    %s", color.RedString(e["message"].(string)))
-						if hasDoc(responseMethod) {
-							log.Printf("(Use the 'doc' command to learn more about %s)", color.GreenString(responseMethod))
-						}
-						if lastStack != "" {
-							log.Printf("(Use the 'st' command to see a full stack trace)")
-						}
-					}
-					singleCancel()
-				} else {
-					log.Printf("\n Error we can't unwrap: %s\n", pretty(m))
-				}
-			} else if hasResult {
-				// reply to one or our requests
-				if responseMethod != "Meta.Authenticate" {
-					if execSingle != "" {
-						if raw {
-							fmt.Fprintf(os.Stdout, "%s", string(line))
-						} else {
-							jsonBytes, err := json.MarshalIndent(m["result"], "", "  ")
-							if err != nil {
-								panic(err)
-							}
-							fmt.Fprintf(os.Stdout, "%s", string(jsonBytes))
-						}
-						singleCancel()
-					} else if !raw {
-						log.Printf("← %s: %s\n", color.GreenString(responseMethod), prettyResult(m["result"]))
-					}
-				}
-			} else if _, ok := m["id"]; ok {
-				// server request
-				method := m["method"].(string)
-
-				lastMethod = method
-				if !raw {
-					log.Printf("→ %s: %s\n", color.GreenString(method), pretty(m["params"]))
-					log.Printf("(Reply to this server request with '%.0f [json payload]')", m["id"])
-					if hasDoc(method) {
-						log.Printf("(Use the 'doc' command to learn more about %s)", color.GreenString(method))
-					}
-				}
-			} else if _, ok := m["params"]; ok {
-				// notification
-				method := m["method"].(string)
-
-				if method == "Log" {
-					if p, ok := m["params"].(map[string]interface{}); ok {
-						if (p["level"] != "debug" || debug) && !raw {
-							log.Printf("✉ %s %s\n", p["level"], p["message"])
-						}
-					}
-				} else {
-					if execSingle != "" {
-						if raw {
-							fmt.Fprintf(os.Stdout, "%s", string(line))
-						} else {
-							jsonBytes, err := json.MarshalIndent(m["params"], "", "  ")
-							if err != nil {
-								panic(err)
-							}
-							fmt.Fprintf(os.Stdout, "%s", string(jsonBytes))
-						}
-						singleCancel()
-					} else if !raw {
-						log.Printf("✉ %s %s\n", color.GreenString(method), prettyResult(m["params"]))
-					}
-				}
-			} else if !raw {
-				log.Printf(" Not sure what: %s\n", pretty(m))
-			}
 			l.Refresh()
-			if err == io.EOF {
+			if eof {
 				break
 			}
 		}
