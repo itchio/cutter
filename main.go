@@ -190,7 +190,7 @@ func doMain() error {
 		mergedLines <- mergedLine{err: err}
 	}
 
-	renderLogf := func(format string, args ...interface{}) {
+	renderLogf := func(format string, args ...any) {
 		hang()
 		log.Printf(format, args...)
 		l.Refresh()
@@ -279,7 +279,7 @@ func doMain() error {
 	var conn net.Conn
 	var secret string
 
-	pretty := func(input interface{}) string {
+	pretty := func(input any) string {
 		out, err := f.Marshal(input)
 		must(err)
 		return string(out)
@@ -313,13 +313,13 @@ func doMain() error {
 		return pr
 	}
 
-	responseChans := make(map[int64]chan map[string]interface{})
+	responseChans := make(map[int64]chan map[string]any)
 	var responseMutex sync.Mutex
 
-	registerResponseChan := func(id int64) chan map[string]interface{} {
+	registerResponseChan := func(id int64) chan map[string]any {
 		responseMutex.Lock()
 		defer responseMutex.Unlock()
-		ch := make(chan map[string]interface{}, 1)
+		ch := make(chan map[string]any, 1)
 		responseChans[id] = ch
 		return ch
 	}
@@ -330,7 +330,7 @@ func doMain() error {
 		delete(responseChans, id)
 	}
 
-	getResponseChan := func(id int64) (chan map[string]interface{}, bool) {
+	getResponseChan := func(id int64) (chan map[string]any, bool) {
 		responseMutex.Lock()
 		defer responseMutex.Unlock()
 		ch, ok := responseChans[id]
@@ -453,7 +453,7 @@ func doMain() error {
 
 	var lastMethod = ""
 	var lastStack = ""
-	var lastData map[string]interface{}
+	var lastData map[string]any
 
 	type msgKind int
 
@@ -465,7 +465,7 @@ func doMain() error {
 		msgNotification
 	)
 
-	prettyResult := func(result interface{}) string {
+	prettyResult := func(result any) string {
 		resultString := pretty(result)
 		if !snip {
 			return resultString
@@ -480,7 +480,7 @@ func doMain() error {
 		return strings.Join(resultLines, "\n")
 	}
 
-	classifyMessage := func(m map[string]interface{}) msgKind {
+	classifyMessage := func(m map[string]any) msgKind {
 		if _, ok := m["error"]; ok {
 			return msgErrorResponse
 		}
@@ -496,7 +496,7 @@ func doMain() error {
 		return msgUnknown
 	}
 
-	handleResponseSideEffects := func(kind msgKind, m map[string]interface{}) string {
+	handleResponseSideEffects := func(kind msgKind, m map[string]any) string {
 		if kind != msgErrorResponse && kind != msgResultResponse {
 			return ""
 		}
@@ -514,7 +514,7 @@ func doMain() error {
 		return getRequest(reqID)
 	}
 
-	writeExecOutput := func(payload interface{}, line []byte) {
+	writeExecOutput := func(payload any, line []byte) {
 		if raw {
 			fmt.Fprintf(os.Stdout, "%s", string(line))
 		} else {
@@ -527,7 +527,7 @@ func doMain() error {
 		singleCancel()
 	}
 
-	renderMessage := func(kind msgKind, line []byte, m map[string]interface{}, responseMethod string) {
+	renderMessage := func(kind msgKind, line []byte, m map[string]any, responseMethod string) {
 		if verbose {
 			if raw {
 				renderLogf("← %s", string(line))
@@ -540,13 +540,13 @@ func doMain() error {
 
 		switch kind {
 		case msgErrorResponse:
-			e, ok := m["error"].(map[string]interface{})
+			e, ok := m["error"].(map[string]any)
 			if !ok {
 				renderLogf("\n Error we can't unwrap: %s\n", pretty(m))
 				return
 			}
 
-			if data, ok := e["data"].(map[string]interface{}); ok {
+			if data, ok := e["data"].(map[string]any); ok {
 				lastData = data
 				if stack, ok := data["stack"].(string); ok {
 					lastStack = stack
@@ -603,7 +603,7 @@ func doMain() error {
 			// notification
 			method := m["method"].(string)
 			if method == "Log" {
-				if p, ok := m["params"].(map[string]interface{}); ok {
+				if p, ok := m["params"].(map[string]any); ok {
 					if p["level"] != "debug" || debug {
 						if raw {
 							renderLogf("%s", string(line))
@@ -643,7 +643,7 @@ func doMain() error {
 				continue
 			}
 
-			m := make(map[string]interface{})
+			m := make(map[string]any)
 			if err := json.Unmarshal(line, &m); err != nil {
 				if verbose {
 					renderLogf("[butler]: %s", string(line))
@@ -867,11 +867,11 @@ func doMain() error {
 				respCh := registerResponseChan(loginReqID)
 				defer unregisterResponseChan(loginReqID)
 
-				loginReq := map[string]interface{}{
+				loginReq := map[string]any{
 					"jsonrpc": "2.0",
 					"id":      loginReqID,
 					"method":  "Profile.LoginWithOAuthCode",
-					"params": map[string]interface{}{
+					"params": map[string]any{
 						"code":         code,
 						"codeVerifier": codeVerifier,
 						"redirectUri":  redirectURI,
@@ -899,16 +899,16 @@ func doMain() error {
 				select {
 				case resp := <-respCh:
 					if errObj, ok := resp["error"]; ok {
-						if e, ok := errObj.(map[string]interface{}); ok {
+						if e, ok := errObj.(map[string]any); ok {
 							log.Printf("⚠ Login failed: %s", color.RedString(e["message"].(string)))
 						}
 					} else if result, ok := resp["result"]; ok {
-						if r, ok := result.(map[string]interface{}); ok {
-							if profile, ok := r["profile"].(map[string]interface{}); ok {
+						if r, ok := result.(map[string]any); ok {
+							if profile, ok := r["profile"].(map[string]any); ok {
 								if pid, ok := profile["id"].(float64); ok {
 									profileID = int64(pid)
 									username := ""
-									if user, ok := profile["user"].(map[string]interface{}); ok {
+									if user, ok := profile["user"].(map[string]any); ok {
 										if u, ok := user["username"].(string); ok {
 											username = u
 										}
@@ -981,7 +981,7 @@ func doMain() error {
 			return nil
 		}
 
-		req := make(map[string]interface{})
+		req := make(map[string]any)
 		req["jsonrpc"] = "2.0"
 
 		var payload string
@@ -1032,7 +1032,7 @@ func doMain() error {
 			req["id"] = reqID
 		}
 
-		payloadObj := make(map[string]interface{})
+		payloadObj := make(map[string]any)
 		err = json.Unmarshal([]byte(payload), &payloadObj)
 		if err != nil {
 			return errors.WrapPrefix(err, "while parsing params", 0)
@@ -1160,13 +1160,13 @@ func must(err error) {
 	}
 }
 
-func parseListenNotification(m map[string]interface{}) (secret string, addr string, ok bool) {
+func parseListenNotification(m map[string]any) (secret string, addr string, ok bool) {
 	secret, ok = m["secret"].(string)
 	if !ok || secret == "" {
 		return "", "", false
 	}
 
-	tcpBlock, ok := m["tcp"].(map[string]interface{})
+	tcpBlock, ok := m["tcp"].(map[string]any)
 	if !ok {
 		return "", "", false
 	}
@@ -1179,7 +1179,7 @@ func parseListenNotification(m map[string]interface{}) (secret string, addr stri
 	return secret, addr, true
 }
 
-func formatSQLLogLine(m map[string]interface{}) (string, bool) {
+func formatSQLLogLine(m map[string]any) (string, bool) {
 	query, _ := m["query"].(string)
 	if query == "" {
 		return "", false
@@ -1190,7 +1190,7 @@ func formatSQLLogLine(m map[string]interface{}) (string, bool) {
 		duration = time.Duration(int64(d)).String()
 	}
 
-	args, _ := m["args"].([]interface{})
+	args, _ := m["args"].([]any)
 
 	var buf bytes.Buffer
 	highlighted := query
@@ -1205,7 +1205,7 @@ func formatSQLLogLine(m map[string]interface{}) (string, bool) {
 	return fmt.Sprintf("[sql] [%s] %s", duration, highlighted), true
 }
 
-func formatHTTPLogLine(m map[string]interface{}) (string, bool) {
+func formatHTTPLogLine(m map[string]any) (string, bool) {
 	method, _ := m["method"].(string)
 	url, _ := m["url"].(string)
 	if method == "" || url == "" {
