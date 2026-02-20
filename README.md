@@ -19,12 +19,15 @@ cutter <butler-path> [flags]
 
 | Flag | Description |
 |------|-------------|
-| `--verbose` | Show full JSON input/output |
-| `--debug` | Show debug log messages |
+| `--verbose` | Show JSON-RPC traffic and butler log lines |
+| `--debug` | Show debug-level log notifications from butlerd |
 | `--dbpath` | Explicit path for database |
 | `--appname` | Application name for database lookup (default: `kitch`) |
 | `-p, --profile` | Profile ID to auto-inject into requests that need one (default: `0`) |
 | `-e, --exec` | Execute a single command and exit (non-interactive mode) |
+| `--log-sql` | Log SQL queries from hades |
+| `--log-http` | Log HTTP requests from go-itchio |
+| `--raw` | Show raw JSON-RPC messages without formatting |
 
 ### Examples
 
@@ -37,6 +40,12 @@ cutter ~/src/butler -e "r Version.Get"
 
 # Start with verbose output and a specific profile
 cutter ~/src/butler --verbose -p 1
+
+# Show raw JSON-RPC messages
+cutter ~/src/butler --raw
+
+# Log SQL queries
+cutter ~/src/butler --log-sql
 ```
 
 ## Interactive commands
@@ -51,8 +60,9 @@ cutter ~/src/butler --verbose -p 1
 | `ed` | Show last error data |
 | `p <id>` | Set profile ID for all future requests |
 | `rb` | Rebuild butler and restart the daemon |
+| `login` | Authenticate with itch.io using OAuth 2.0 + PKCE |
 | `debug` | Toggle debug mode |
-| `snip` | Toggle snip mode |
+| `snip` | Toggle snip mode (truncate long responses) |
 | `help` | Show help |
 | `q` / `exit` | Quit |
 
